@@ -13,15 +13,14 @@ from aiogram.types import (
 )
 
 import database as db
-
 # --- SOZLAMALAR ---
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8938283613:AAH2P8pk2M8LrICkbYT-fo9supIVL6Rlj6U")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8938283613:AAH2P8pk2M8LrICkbYT-fo9supIVL6Rlj6U").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", "5974947091"))
 
-# Pay Hamyon API sozlamalari (Yangi kassa kalitlari bilan)
+# SHOP_ID va SHOP_KEY qiymatlarini to'g'ri va ortiqcha bo'shliqlarsiz olish
 SHOP_ID = int(os.getenv("PAY_HAMYON_KASSA_ID", "20"))
-SHOP_KEY = os.getenv("PAY_HAMYON_KEY", "V04nimOvjy5NGkXtp6qofufRcFB82tT")
-BASE_URL = os.getenv("PAY_HAMYON_BASE_URL", "https://user91.hostx.uz")
+SHOP_KEY = os.getenv("PAY_HAMYON_KEY", "V04nim0vjY5NGkXtp6qofufRcFB82tT").strip()
+BASE_URL = os.getenv("PAY_HAMYON_BASE_URL", "https://user91.hostx.uz").strip()
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
