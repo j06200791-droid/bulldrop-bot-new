@@ -18,9 +18,9 @@ import database as db
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8938283613:AAH2P8pk2M8LrICkbYT-fo9supIVL6Rlj6U")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "5974947091"))
 
-# Pay Hamyon API sozlamalari (Faylingizdagi ma'lumotlar)
+# Pay Hamyon API sozlamalari (Yangi kassa kalitlari bilan)
 SHOP_ID = int(os.getenv("PAY_HAMYON_KASSA_ID", "20"))
-SHOP_KEY = os.getenv("PAY_HAMYON_KEY", "V04nim0vjY5NGkXtp6qofufRcFB82tT")
+SHOP_KEY = os.getenv("PAY_HAMYON_KEY", "V04nimOvjy5NGkXtp6qofufRcFB82tT")
 BASE_URL = os.getenv("PAY_HAMYON_BASE_URL", "https://user91.hostx.uz")
 
 bot = Bot(token=BOT_TOKEN)
@@ -37,13 +37,18 @@ async def send_payhamyon_request(endpoint: str, payload: dict):
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-async def create_payment_api(amount: int):
+async def create_payment_api(amount: int, user_id: int):
     payload = {
         "shop_id": SHOP_ID,
         "shop_key": SHOP_KEY.strip(),
-        "amount": int(amount)
+        "amount": int(amount),
+        "user_id": user_id
     }
-    return await send_payhamyon_request("/api/payment/create", payload)
+    # Universal kassa API yo'llari
+    res = await send_payhamyon_request("/api/create", payload)
+    if not res.get("status") and not res.get("success"):
+        res = await send_payhamyon_request("/api/payment/create", payload)
+    return res
 
 async def check_payment_api(token: str):
     payload = {
@@ -51,7 +56,10 @@ async def check_payment_api(token: str):
         "shop_key": SHOP_KEY.strip(),
         "token": str(token).strip()
     }
-    return await send_payhamyon_request("/api/payment/check", payload)
+    res = await send_payhamyon_request("/api/check", payload)
+    if not res.get("status") and not res.get("success"):
+        res = await send_payhamyon_request("/api/payment/check", payload)
+    return res
 
 async def cancel_payment_api(token: str):
     payload = {
@@ -238,7 +246,6 @@ async def process_amount(message: types.Message, state: FSMContext):
 
     await state.clear()
     
-    # EXACT 2 TA TUGMA: 1 ta Avto, 1 ta Karta (Chek)
     method_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚡️ AVTO TO'LOV", callback_data=f"pay_auto_{amount}")],
         [InlineKeyboardButton(text="💳 KARTA (CHEK YUBORISH)", callback_data=f"pay_manual_{amount}")],
@@ -251,34 +258,46 @@ async def process_amount(message: types.Message, state: FSMContext):
         parse_mode="Markdown"
     )
 
-# 1. AVTO TO'LOV (PayHamyon SDK)
+# 1. AVTO TO'LOV (PayHamyon)
 @dp.callback_query(F.data.startswith("pay_auto_"))
 async def process_auto_payment(call: types.CallbackQuery):
     amount = int(call.data.split("_")[2])
+    user_id = call.from_user.id
 
-    res = await create_payment_api(amount)
+    res = await create_payment_api(amount, user_id)
 
-    if not res.get("success"):
-        error_msg = res.get("error", "Noma'lum xatolik")
+    if not res.get("success") and res.get("status") != "success" and "url" not in res and "link" not in res:
+        error_msg = res.get("message", res.get("error", "Noma'lum xatolik"))
         await call.answer(f"❌ To'lov chekini yaratishda xatolik: {error_msg}", show_alert=True)
         return
 
-    token = res.get("token")
-    pay_amount = res.get("pay_amount", amount)
+    pay_url = res.get("url") or res.get("link") or res.get("pay_url")
+    token = res.get("token", res.get("invoice_id", "none"))
     card = res.get("card", "9860160602044267")
 
-    pay_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 To'lovni tekshirish", callback_data=f"chk_{token}_{amount}")],
-        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"cnl_{token}")]
-    ])
+    if pay_url:
+        pay_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚡ TO'LASH (PAYHAMYON)", url=pay_url)],
+            [InlineKeyboardButton(text="🔄 To'lovni tekshirish", callback_data=f"chk_{token}_{amount}")],
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"cnl_{token}")]
+        ])
+        text = (
+            f"⚡️ **AVTO TO'LOV CHEKI TAYYOR**\n\n"
+            f"💵 To'lanishi kerak: **{amount:,} so'm**\n\n"
+            f"Tugmani bosib to'lovni amalga oshiring va so'ng **To'lovni tekshirish** tugmasini bosing."
+        )
+    else:
+        pay_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 To'lovni tekshirish", callback_data=f"chk_{token}_{amount}")],
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"cnl_{token}")]
+        ])
+        text = (
+            f"⚡️ **AVTO TO'LOV CHEKI TAYYOR**\n\n"
+            f"💳 Karta raqam: `{card}`\n"
+            f"💵 To'lanishi kerak: **{amount:,} so'm**\n\n"
+            f"Ko'rsatilgan kartaga **{amount:,} so'm** o'tkazing va **To'lovni tekshirish** tugmasini bosing."
+        )
 
-    text = (
-        f"⚡️ **AVTO TO'LOV CHEKI TAYYOR**\n\n"
-        f"💳 Karta raqam: `{card}`\n"
-        f"💵 To'lanishi kerak: **{pay_amount:,} so'm**\n"
-        f"🧾 Chek ID: `{token}`\n\n"
-        f"⚠️ Ko'rsatilgan kartaga **{pay_amount:,} so'm** o'tkazing va **To'lovni tekshirish** tugmasini bosing."
-    )
     await call.message.edit_text(text, reply_markup=pay_kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("chk_"))
@@ -306,12 +325,12 @@ async def check_auto_payment_handler(call: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("cnl_"))
 async def cancel_auto_payment_handler(call: types.CallbackQuery, state: FSMContext):
     _, token = call.data.split("_")
-    await cancel_payment_api(token)
+    if token != "none":
+        await cancel_payment_api(token)
     await state.clear()
     await call.message.edit_text("❌ To'lov bekor qilindi.")
-    await call.message.answer("Bosh menyu:", reply_markup=main_menu(call.from_user.id))
 
-# 2. KARTA ORQALI CHEK YUBORISH (ADMIN TASDIQLAYDI)
+# 2. KARTA ORQALI CHEK YUBORISH
 @dp.callback_query(F.data.startswith("pay_manual_"))
 async def process_manual_payment(call: types.CallbackQuery, state: FSMContext):
     amount = int(call.data.split("_")[2])
