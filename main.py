@@ -16,7 +16,7 @@ import database as db
 
 # --- CONFIGURATION ---
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8938283613:AAH2P8pk2M8LrICkbYT-fo9supIVL6Rlj6U")
+BOT_TOKEN ="8938283613:AAH2P8pk2M8LrICkbYT-fo9supIVL6Rlj6U"
 ADMIN_ID = 5974947091
 
 bot = Bot(token=BOT_TOKEN)
@@ -97,18 +97,12 @@ async def pm_menu_keyboard():
     c199 = await db.get_pm_count("199")
 
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=f"💎 24 PM | {prices.get('24', 1500):,} so'm | {c24} ta", callback_data="buy_24"),
-            InlineKeyboardButton(text=f"💎 49 PM | {prices.get('49', 3500):,} so'm | {c49} ta", callback_data="buy_49")
-        ],
-        [
-            InlineKeyboardButton(text=f"💎 99 PM | {prices.get('99', 9000):,} so'm | {c99} ta", callback_data="buy_99"),
-            InlineKeyboardButton(text=f"💎 149 PM | {prices.get('149', 16000):,} so'm | {c149} ta", callback_data="buy_149")
-        ],
-        [
-            InlineKeyboardButton(text=f"💎 179 PM | {prices.get('179', 18000):,} so'm | {c179} ta", callback_data="buy_179"),
-            InlineKeyboardButton(text=f"💎 199 PM | {prices.get('199', 21000):,} so'm | {c199} ta", callback_data="buy_199")
-        ]
+        [InlineKeyboardButton(text=f"🎁 24 PM | {prices.get('24', 1500):,} so'm | {c24} ta", callback_data="buy_24")],
+        [InlineKeyboardButton(text=f"🎁 49 PM | {prices.get('49', 3500):,} so'm | {c49} ta", callback_data="buy_49")],
+        [InlineKeyboardButton(text=f"🎁 99 PM | {prices.get('99', 9000):,} so'm | {c99} ta", callback_data="buy_99")],
+        [InlineKeyboardButton(text=f"🎁 149 PM | {prices.get('149', 16000):,} so'm | {c149} ta", callback_data="buy_149")],
+        [InlineKeyboardButton(text=f"🎁 179 PM | {prices.get('179', 18000):,} so'm | {c179} ta", callback_data="buy_179")],
+        [InlineKeyboardButton(text=f"🎁 199 PM | {prices.get('199', 21000):,} so'm | {c199} ta", callback_data="buy_199")]
     ])
 
 
@@ -187,6 +181,7 @@ async def process_buy_pm(call: types.CallbackQuery):
     category = call.data.split("_")[1]
     prices = await db.get_pm_prices()
     
+    # Odatiy narxlar (agar bazada bo'lmasa)
     default_prices = {"24": 1500, "49": 3500, "99": 9000, "149": 16000, "179": 18000, "199": 21000}
     price = prices.get(category, default_prices.get(category, 0))
     
