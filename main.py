@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 from dotenv import load_dotenv
-
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -17,8 +16,8 @@ import database as db
 
 # --- CONFIGURATION ---
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+BOT_TOKEN ="8938283613:AAH2P8pk2M8LrICkbYT-fo9supIVL6Rlj6U"
+ADMIN_ID = 5974947091
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
