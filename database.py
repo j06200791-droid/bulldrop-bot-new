@@ -1,107 +1,132 @@
-import aiosqlite
+import sqlite3
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
-DB_NAME = "bot_database.db"
+DB_NAME = "database.db"
+executor = ThreadPoolExecutor(max_workers=5)
+
+def _run_query(func, *args):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    res = func(conn, cursor, *args)
+    conn.commit()
+    conn.close()
+    return res
+
+async def run_async(func, *args):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, _run_query, func, *args)
+
+# --- DB METHODS ---
+def _init_db(conn, cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            balance INTEGER DEFAULT 0,
+            is_banned INTEGER DEFAULT 0
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pm_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT,
+            code TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pm_prices (
+            category TEXT PRIMARY KEY,
+            price INTEGER
+        )
+    """)
 
 async def init_db():
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                balance INTEGER DEFAULT 0,
-                is_banned INTEGER DEFAULT 0
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS pm_codes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                category TEXT,
-                code TEXT
-            )
-        """)
-        # PM Narxlar uchun jadval
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS pm_prices (
-                category TEXT PRIMARY KEY,
-                price INTEGER
-            )
-        """)
-        # Boshlang'ich narxlar
-        default_prices = [("42", 2500), ("79", 4500), ("99", 7500), ("299", 20000)]
-        for cat, pr in default_prices:
-            await db.execute("INSERT OR IGNORE INTO pm_prices (category, price) VALUES (?, ?)", (cat, pr))
-            
-        await db.commit()
+    await run_async(_init_db)
 
-async def get_pm_prices() -> dict:
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT category, price FROM pm_prices") as cursor:
-            rows = await cursor.fetchall()
-            return {r[0]: r[1] for r in rows}
-
-async def update_pm_price(category: str, new_price: int):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("UPDATE pm_prices SET price = ? WHERE category = ?", (new_price, category))
-        await db.commit()
+def _get_user_balance(conn, cursor, user_id):
+    cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    cursor.execute("INSERT INTO users (user_id, balance) VALUES (?, ?)", (user_id, 0))
+    return 0
 
 async def get_user_balance(user_id: int) -> int:
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                return row[0]
-            else:
-                await db.execute("INSERT INTO users (user_id, balance, is_banned) VALUES (?, 0, 0)", (user_id,))
-                await db.commit()
-                return 0
+    return await run_async(_get_user_balance, user_id)
+
+def _add_user_balance(conn, cursor, user_id, amount):
+    _get_user_balance(conn, cursor, user_id)
+    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
 
 async def add_user_balance(user_id: int, amount: int):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await get_user_balance(user_id)
-        await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-        await db.commit()
+    await run_async(_add_user_balance, user_id, amount)
 
-async def set_user_ban(user_id: int, status: int):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await get_user_balance(user_id)
-        await db.execute("UPDATE users SET is_banned = ? WHERE user_id = ?", (status, user_id))
-        await db.commit()
+def _is_user_banned(conn, cursor, user_id):
+    cursor.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    return bool(row[0]) if row else False
 
 async def is_user_banned(user_id: int) -> bool:
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-            return bool(row[0]) if row else False
+    return await run_async(_is_user_banned, user_id)
 
-async def get_users_count() -> int:
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT COUNT(*) FROM users") as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else 0
+def _set_user_ban(conn, cursor, user_id, status):
+    _get_user_balance(conn, cursor, user_id)
+    cursor.execute("UPDATE users SET is_banned = ? WHERE user_id = ?", (status, user_id))
 
-async def get_all_users():
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT user_id FROM users") as cursor:
-            rows = await cursor.fetchall()
-            return [r[0] for r in rows]
+async def set_user_ban(user_id: int, status: int):
+    await run_async(_set_user_ban, user_id, status)
 
-async def get_pm_count(category: str) -> int:
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT COUNT(*) FROM pm_codes WHERE category = ?", (category,)) as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else 0
+def _get_pm_prices(conn, cursor):
+    cursor.execute("SELECT category, price FROM pm_prices")
+    rows = cursor.fetchall()
+    return {row[0]: row[1] for row in rows}
+
+async def get_pm_prices() -> dict:
+    return await run_async(_get_pm_prices)
+
+def _update_pm_price(conn, cursor, category, price):
+    cursor.execute("INSERT OR REPLACE INTO pm_prices (category, price) VALUES (?, ?)", (category, price))
+
+async def update_pm_price(category: str, price: int):
+    await run_async(_update_pm_price, category, price)
+
+def _add_pm_code(conn, cursor, category, code):
+    cursor.execute("INSERT INTO pm_codes (category, code) VALUES (?, ?)", (category, code))
 
 async def add_pm_code(category: str, code: str):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("INSERT INTO pm_codes (category, code) VALUES (?, ?)", (category, code))
-        await db.commit()
+    await run_async(_add_pm_code, category, code)
+
+def _get_pm_count(conn, cursor, category):
+    cursor.execute("SELECT COUNT(*) FROM pm_codes WHERE category = ?", (category,))
+    row = cursor.fetchone()
+    return row[0] if row else 0
+
+async def get_pm_count(category: str) -> int:
+    return await run_async(_get_pm_count, category)
+
+def _buy_pm_code(conn, cursor, category):
+    cursor.execute("SELECT id, code FROM pm_codes WHERE category = ? LIMIT 1", (category,))
+    row = cursor.fetchone()
+    if row:
+        code_id, code = row[0], row[1]
+        cursor.execute("DELETE FROM pm_codes WHERE id = ?", (code_id,))
+        return code
+    return None
 
 async def buy_pm_code(category: str):
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT id, code FROM pm_codes WHERE category = ? LIMIT 1", (category,)) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                pm_id, code = row
-                await db.execute("DELETE FROM pm_codes WHERE id = ?", (pm_id,))
-                await db.commit()
-                return code
-            return None
+    return await run_async(_buy_pm_code, category)
+
+def _get_users_count(conn, cursor):
+    cursor.execute("SELECT COUNT(*) FROM users")
+    row = cursor.fetchone()
+    return row[0] if row else 0
+
+async def get_users_count() -> int:
+    return await run_async(_get_users_count)
+
+def _get_all_users(conn, cursor):
+    cursor.execute("SELECT user_id FROM users")
+    return cursor.fetchall()
+
+async def get_all_users():
+    return await run_async(_get_all_users)
