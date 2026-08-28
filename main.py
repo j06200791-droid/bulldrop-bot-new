@@ -266,6 +266,8 @@ async def cmd_admin(message: types.Message, state: FSMContext):
 @dp.message(F.text == "🎁 Promokod sotib olish")
 async def show_purchase_rules(message: types.Message):
     rules_text = (
+        "❗️ Muhim xarid qoidasi!\n\n"
+        "📹 Xarid qilish tugmasini bosishdan oldin uzluksiz ekran videosini (Screen Record) yoqing!\n\n"
         "Videoda botdan kod olinishi, nusxalanib (Copy) darhol Bulldrop saytiga qo'yilishi (Paste) va faolllashtirilishi kesilmasdan ko'rinishi shart.\n\n"
         "⚠️ Aks holda \"ishlamadi\" yoki \"ishlatilgan\" degan e'tirozlar ko'rib chiqilmaydi va pul qaytarilmaydi.\n\n"
         "👇 Qoidaga rozilik bildirsangiz, quyidagi tugmani bosing:"
