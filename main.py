@@ -1,6 +1,9 @@
 import asyncio
 import logging
 import os
+import json
+import urllib.request
+import urllib.error
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -11,21 +14,106 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, 
     InlineKeyboardMarkup, InlineKeyboardButton
 )
+from aiohttp import web
 
 import database as db
 
 # --- CONFIGURATION ---
 load_dotenv()
-BOT_TOKEN ="8938283613:AAH2P8pk2M8LrICkbYT-fo9supIVL6Rlj6U"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8938283613:AAH2P8pk2M8LrICkbYT-fo9supIVL6Rlj6U")
 ADMIN_ID = 5974947091
+
+# PayHamyon Sozlamalari
+SHOP_ID = 20
+SHOP_KEY = "V04nimOvjY5NGkXtp6qofufRcFB82tT"
+BASE_URL = "https://user91.hostx.uz"
+
+# Webhook Server Sozlamalari (Hosting yoki VPS uchun)
+WEBHOOK_PATH = "/payhamyon/webhook"
+WEB_SERVER_HOST = "0.0.0.0"
+WEB_SERVER_PORT = int(os.getenv("PORT", 8080))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 
+# --- PAYHAMYON API FUNKSIYALARI ---
+def send_payhamyon_request(url, payload):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            return json.loads(exc.read().decode("utf-8"))
+        except Exception:
+            return {"success": False, "error": f"http_error_{exc.code}"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+async def async_create_payment(amount: int, callback_url: str = None):
+    payload = {
+        "shop_id": int(SHOP_ID),
+        "shop_key": str(SHOP_KEY).strip(),
+        "amount": int(amount),
+    }
+    if callback_url:
+        payload["callback_url"] = callback_url
+    return await asyncio.to_thread(send_payhamyon_request, f"{BASE_URL}/api/payment/create", payload)
+
+async def async_check_payment(token: str):
+    payload = {
+        "shop_id": int(SHOP_ID),
+        "shop_key": str(SHOP_KEY).strip(),
+        "token": str(token).strip(),
+    }
+    return await asyncio.to_thread(send_payhamyon_request, f"{BASE_URL}/api/payment/check", payload)
+
+
+# --- PAYHAMYON WEBHOOK (CALLBACK) HANDLER ---
+async def payhamyon_webhook_handler(request: web.Request):
+    try:
+        data = await request.json()
+        
+        event = data.get("event")
+        status = data.get("status")
+        token = data.get("token")
+        amount = data.get("amount") or data.get("pay_amount")
+        
+        # PayHamyon yuborgan callback "payment.paid" va "paid" bo'lsa
+        if (event == "payment.paid" or status in ["paid", "success"]):
+            user_id = await db.get_user_id_by_token(token) if hasattr(db, "get_user_id_by_token") else None
+            
+            if user_id:
+                await db.add_user_balance(user_id, int(amount))
+                new_bal = await db.get_user_balance(user_id)
+                try:
+                    await bot.send_message(
+                        user_id,
+                        f"✅ **To'lov muvaffaqiyatli qabul qilindi!**\n\n"
+                        f"💰 Qabul qilingan summa: **+{int(amount):,} so'm**\n"
+                        f"💳 Yangi balansingiz: **{new_bal:,} so'm**\n\n"
+                        f"Rahmat! Xaridingiz uchun tashakkur.",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
+        
+        return web.json_response({"status": "ok"}, status=200)
+    except Exception as e:
+        logging.error(f"Webhook xatoligi: {e}")
+        return web.json_response({"status": "error"}, status=400)
+
+
 # --- FSM STATES ---
 class TopUpState(StatesGroup):
-    waiting_for_amount = State()
+    waiting_for_auto_amount = State()
     waiting_for_receipt = State()
 
 
@@ -66,6 +154,15 @@ def main_menu(user_id: int):
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
+def topup_methods_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⚡ Avto to'ldirish ", callback_data="pay_auto")],
+            [InlineKeyboardButton(text="👨‍💻 Admin yordamida", callback_data="pay_admin")]
+        ]
+    )
+
+
 def admin_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -97,12 +194,12 @@ async def pm_menu_keyboard():
     c199 = await db.get_pm_count("199")
 
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🎁 24 PM | {prices.get('24', 1500):,} so'm | {c24} ta", callback_data="buy_24")],
-        [InlineKeyboardButton(text=f"🎁 49 PM | {prices.get('49', 3500):,} so'm | {c49} ta", callback_data="buy_49")],
-        [InlineKeyboardButton(text=f"🎁 99 PM | {prices.get('99', 9000):,} so'm | {c99} ta", callback_data="buy_99")],
-        [InlineKeyboardButton(text=f"🎁 149 PM | {prices.get('149', 16000):,} so'm | {c149} ta", callback_data="buy_149")],
-        [InlineKeyboardButton(text=f"🎁 179 PM | {prices.get('179', 18000):,} so'm | {c179} ta", callback_data="buy_179")],
-        [InlineKeyboardButton(text=f"🎁 199 PM | {prices.get('199', 21000):,} so'm | {c199} ta", callback_data="buy_199")]
+        [InlineKeyboardButton(text=f"🎁 24 lik — {prices.get('24', 1500):,} so'm ({c24} ta bor)", callback_data="buy_24")],
+        [InlineKeyboardButton(text=f"🎁 49 lik — {prices.get('49', 3500):,} so'm ({c49} ta bor)", callback_data="buy_49")],
+        [InlineKeyboardButton(text=f"🎁 99 lik — {prices.get('99', 9000):,} so'm ({c99} ta bor)", callback_data="buy_99")],
+        [InlineKeyboardButton(text=f"🎁 149 lik — {prices.get('149', 16000):,} so'm ({c149} ta bor)", callback_data="buy_149")],
+        [InlineKeyboardButton(text=f"🎁 179 lik — {prices.get('179', 18000):,} so'm ({c179} ta bor)", callback_data="buy_179")],
+        [InlineKeyboardButton(text=f"🎁 199 lik — {prices.get('199', 21000):,} so'm ({c199} ta bor)", callback_data="buy_199")]
     ])
 
 
@@ -123,7 +220,7 @@ async def global_back_handler(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     await state.clear()
     
-    if current_state in [TopUpState.waiting_for_amount.state, TopUpState.waiting_for_receipt.state]:
+    if current_state in [TopUpState.waiting_for_auto_amount.state, TopUpState.waiting_for_receipt.state]:
         await message.answer("Bosh menyuga qaytdingiz:", reply_markup=main_menu(message.from_user.id))
         return
 
@@ -155,7 +252,7 @@ async def cmd_admin(message: types.Message, state: FSMContext):
 @dp.message(F.text == "🎁 Promokod sotib olish")
 async def show_purchase_rules(message: types.Message):
     rules_text = (
-        "❗️ **Muhim xarid qoidasi!**\n\n"
+        "❗️ Muhim xarid qoidasi!\n\n"
         "📹 Xarid qilish tugmasini bosishdan oldin uzluksiz ekran videosini (Screen Record) yoqing!\n\n"
         "Videoda botdan kod olinishi, nusxalanib (Copy) darhol Bulldrop saytiga qo'yilishi (Paste) va faolllashtirilishi kesilmasdan ko'rinishi shart.\n\n"
         "⚠️ Aks holda \"ishlamadi\" yoki \"ishlatilgan\" degan e'tirozlar ko'rib chiqilmaydi va pul qaytarilmaydi.\n\n"
@@ -166,13 +263,13 @@ async def show_purchase_rules(message: types.Message):
         [InlineKeyboardButton(text="✅ ROZIMAN", callback_data="agree_rules")]
     ])
     
-    await message.answer(rules_text, reply_markup=confirm_kb, parse_mode="Markdown")
+    await message.answer(rules_text, reply_markup=confirm_kb)
 
 
 @dp.callback_query(F.data == "agree_rules")
 async def show_pm_list_after_rules(call: types.CallbackQuery):
     kb = await pm_menu_keyboard()
-    await call.message.edit_text("💎 **PM XARID**\n\nXarid qilmoqchi bo'lgan PM paketini tanlang:", reply_markup=kb, parse_mode="Markdown")
+    await call.message.edit_text("Quyidagi tugmalardan birini tanlang:", reply_markup=kb)
     await call.answer()
 
 
@@ -181,7 +278,6 @@ async def process_buy_pm(call: types.CallbackQuery):
     category = call.data.split("_")[1]
     prices = await db.get_pm_prices()
     
-    # Odatiy narxlar (agar bazada bo'lmasa)
     default_prices = {"24": 1500, "49": 3500, "99": 9000, "149": 16000, "179": 18000, "199": 21000}
     price = prices.get(category, default_prices.get(category, 0))
     
@@ -221,33 +317,125 @@ async def show_balance(message: types.Message):
 
 
 @dp.message(F.text == "💳 Balans to'ldirish")
-async def start_topup(message: types.Message, state: FSMContext):
-    await state.set_state(TopUpState.waiting_for_amount)
-    await message.answer("Qancha summa kiritmoqchisiz? (Masalan: 20000)", reply_markup=back_keyboard())
+async def start_topup_select(message: types.Message):
+    await message.answer("To'lov usulini tanlang:", reply_markup=topup_methods_keyboard())
 
 
-@dp.message(TopUpState.waiting_for_amount)
-async def process_amount(message: types.Message, state: FSMContext):
+# --- OPTION A: AVTO TO'LDIRISH (PAYHAMYON) ---
+@dp.callback_query(F.data == "pay_auto")
+async def start_auto_topup(call: types.CallbackQuery, state: FSMContext):
+    await state.set_state(TopUpState.waiting_for_auto_amount)
+    
+    text = (
+        "💳 **Hisobni to'ldirish**\n\n"
+        "💰 Qancha summaga to'ldirmoqchisiz?\n"
+        "📊 Limit: **1 000 - 100 000 000 so'm**\n\n"
+        "📝 Summani so'mda kiriting (Masalan: 1000):"
+    )
+    await call.message.edit_text(text, parse_mode="Markdown")
+    await call.message.answer("Bekor qilish uchun pastdagi 'Orqaga' tugmasini bosing:", reply_markup=back_keyboard())
+    await call.answer()
+
+
+@dp.message(TopUpState.waiting_for_auto_amount)
+async def process_auto_amount(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
-        await message.answer("Iltimos, faqat raqam kiriting!", reply_markup=back_keyboard())
+        await message.answer("❌ Iltimos, faqat raqamlardan iborat summa kiriting (masalan: 1000):", reply_markup=back_keyboard())
         return
 
     amount = int(message.text)
-    if amount < 1000:
-        await message.answer("❌ Minimal to'lov summasi 1 000 so'm!\nIltimos, qaytadan kiriting:", reply_markup=back_keyboard())
+    if amount < 1000 or amount > 100000000:
+        await message.answer("❌ Limit: 1 000 - 100 000 000 so'm oralig'ida kiriting!", reply_markup=back_keyboard())
         return
 
-    await state.update_data(amount=amount)
-    await state.set_state(TopUpState.waiting_for_receipt)
+    await state.clear()
+    msg = await message.answer("⏳ To'lov hisob-fakturasi (Chek) yaratilmoqda...")
+
+    payment = await async_create_payment(amount)
+
+    if payment.get("success"):
+        token = payment.get("token")
+        pay_amount = payment.get("pay_amount", amount)
+        card = payment.get("card", "9860 2466 0177 3509")
+
+        # Tokenni user_id bilan bazaga bog'lab qo'yish
+        if hasattr(db, "save_payment_token"):
+            await db.save_payment_token(token, message.from_user.id, amount)
+
+        # Ham Tekshirish, ham Bekor qilish tugmasi
+        action_kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="✅ To'lovni tekshirish", callback_data=f"checkpay_{token}_{pay_amount}")],
+                [InlineKeyboardButton(text="❌ To'lovni bekor qilish", callback_data=f"cancelpay_{token}")]
+            ]
+        )
+
+        text = (
+            f"💳 **To'lov hisob-fakturasi (Chek)**\n\n"
+            f"💰 **Asosiy summa:** {amount:,} so'm\n"
+            f"💵 **To'lanishi kerak:** {pay_amount:,} so'm\n"
+            f"💳 **HUMO Karta:** `{card}`\n"
+            f"🧾 **To'lov kodi (Token):** `{token}`\n"
+            f"⏰ **Amal qilish muddati:** 10 daqiqa\n\n"
+            f"⚠️ **Diqqat, muhim eslatma:**\n"
+            f"1. Kartaga aynan **{pay_amount:,} so'm** o'tkazing (bir so'm ham kam yoki ko'p emas).\n"
+            f"2. To'lovni amalga oshirgach, pastdagi **\"✅ To'lovni tekshirish\"** tugmasini bosing."
+        )
+        await msg.edit_text(text, reply_markup=action_kb, parse_mode="Markdown")
+    else:
+        err = payment.get("error", "Noma'lum xatolik")
+        await msg.edit_text(f"⚠️ To'lov yaratishda xatolik yuz berdi: {err}")
+
+
+# --- TO'LOVNI TEKSHIRISH HANDLERI ---
+@dp.callback_query(F.data.startswith("checkpay_"))
+async def check_auto_pay(call: types.CallbackQuery):
+    _, token, pay_amount = call.data.split("_")
+    pay_amount = int(pay_amount)
     
-    card_text = (
-        f"To'lovni quyidagi kartaga o'tkazing:\n"
-        f"💳 `9860160602044267`\n"
-        f"👤 A.U\n\n"
-        f"Summa: {amount:,} so'm\n\n"
-        f"To'lovni amalga oshirgach, chek rasmini (skrinshot) shu yerga yuboring."
+    await call.answer("🔍 To'lov tekshirilmoqda...", show_alert=False)
+    
+    check_result = await async_check_payment(token)
+    
+    status = check_result.get("status") or check_result.get("data", {}).get("status")
+    
+    if status in ["paid", "success"] or check_result.get("success") is True:
+        user_id = call.from_user.id
+        await db.add_user_balance(user_id, pay_amount)
+        new_bal = await db.get_user_balance(user_id)
+        
+        await call.message.edit_text(
+            f"✅ **To'lov muvaffaqiyatli amalga oshirildi!**\n\n"
+            f"💰 Hisobga qo'shildi: **+{pay_amount:,} so'm**\n"
+            f"💳 Yangi balansingiz: **{new_bal:,} so'm**",
+            parse_mode="Markdown"
+        )
+        await call.answer("🎉 Balansingiz to'ldirildi!", show_alert=True)
+    else:
+        await call.answer("❌ To'lov hali tushmagan yoki tasdiqlanmagan. Birozdan so'ng qayta urining!", show_alert=True)
+
+
+# To'lovni bekor qilish tugmasi
+@dp.callback_query(F.data.startswith("cancelpay_"))
+async def cancel_auto_pay(call: types.CallbackQuery):
+    await call.message.edit_text("❌ To'lov bekor qilindi.")
+    await call.answer("Bekor qilindi")
+
+
+# --- OPTION B: ADMIN YORDAMIDA TO'LDIRISH ---
+@dp.callback_query(F.data == "pay_admin")
+async def start_admin_topup(call: types.CallbackQuery, state: FSMContext):
+    await state.set_state(TopUpState.waiting_for_receipt)
+    text = (
+        "👨‍💻 **Admin yordamida to'ldirish**\n\n"
+        "To'lovni quyidagi kartaga o'tkazing:\n"
+        "💳 `9860160602044267`\n"
+        "👤 A.U\n\n"
+        "To'lovni amalga oshirgach, chek rasmini (skrinshot) ushbu chatga yuboring."
     )
-    await message.answer(card_text, reply_markup=back_keyboard(), parse_mode="Markdown")
+    await call.message.edit_text(text, parse_mode="Markdown")
+    await call.message.answer("Orqaga qaytish uchun bosing:", reply_markup=back_keyboard())
+    await call.answer()
 
 
 @dp.message(TopUpState.waiting_for_receipt)
@@ -256,18 +444,16 @@ async def process_receipt(message: types.Message, state: FSMContext):
         await message.answer("Iltimos, chek rasmini (yoki faylini) yuboring!", reply_markup=back_keyboard())
         return
 
-    data = await state.get_data()
-    amount = data.get("amount")
     user_id = message.from_user.id
     
     confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"approve_{user_id}_{amount}"),
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"approve_{user_id}"),
             InlineKeyboardButton(text="❌ Rad etish", callback_data=f"reject_{user_id}")
         ]
     ])
     
-    caption_text = f"📥 **Yangi to'lov cheki!**\n\n👤 Foydalanuvchi: {message.from_user.full_name} (`{user_id}`)\n💵 Summa: **{amount:,} so'm**"
+    caption_text = f"📥 **Yangi to'lov cheki (Admin)!**\n\n👤 Foydalanuvchi: {message.from_user.full_name} (`{user_id}`)"
 
     if message.photo:
         await bot.send_photo(chat_id=ADMIN_ID, photo=message.photo[-1].file_id, caption=caption_text, reply_markup=confirm_kb, parse_mode="Markdown")
@@ -278,22 +464,19 @@ async def process_receipt(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-# --- ADMIN: TO'LOV TASDIQLASH/RAD ETISH ---
+# --- ADMIN: MANUAL TO'LOV TASDIQLASH/RAD ETISH ---
 @dp.callback_query(F.data.startswith("approve_"))
-async def approve_payment(call: types.CallbackQuery):
+async def approve_payment(call: types.CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return
-    _, user_id, amount = call.data.split("_")
-    user_id, amount = int(user_id), int(amount)
+    parts = call.data.split("_")
+    user_id = int(parts[1])
     
-    await db.add_user_balance(user_id, amount)
+    await state.update_data(approve_user_id=user_id)
+    await state.set_state(AdminUserOpState.waiting_for_amount_add)
     
-    if call.message.caption:
-        await call.message.edit_caption(caption=call.message.caption + "\n\n✅ **TASDIQLANDI**", parse_mode="Markdown")
-    else:
-        await call.message.edit_text(text=call.message.text + "\n\n✅ **TASDIQLANDI**", parse_mode="Markdown")
-        
-    await bot.send_message(user_id, f"🎉 To'lovingiz tasdiqlandi! Hisobingizga **{amount:,} so'm** qo'shildi.", parse_mode="Markdown")
+    await call.message.answer(f"👤 User (`{user_id}`) cheki tasdiqlanmoqda.\nQancha summa qo'shmoqchisiz? (Masalan: 10000):", reply_markup=back_keyboard())
+    await call.answer()
 
 
 @dp.callback_query(F.data.startswith("reject_"))
@@ -441,7 +624,7 @@ async def admin_balance_add_amount(message: types.Message, state: FSMContext):
         return
     
     data = await state.get_data()
-    target_id = data.get("target_id")
+    target_id = data.get("target_id") or data.get("approve_user_id")
     amount = int(message.text)
     
     await db.add_user_balance(target_id, amount)
@@ -601,7 +784,7 @@ async def send_broadcast(message: types.Message, state: FSMContext):
     
     users = await db.get_all_users()
     success, failed = 0, 0
-    await message.answer("🚀 Xabar yuborish boshlandi...")
+    await message.answer("🚀 Xabar yuborish boshlendi...")
 
     for user in users:
         uid = user[0] if isinstance(user, (tuple, list)) else user
@@ -621,10 +804,22 @@ async def send_broadcast(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-# --- BOTNI ISHGA TUSHIRISH ---
+# --- BOTNI VA WEBHOOK SERVERNI BIRGA ISHGA TUSHIRISH ---
 async def main():
     await db.init_db()
     logging.basicConfig(level=logging.INFO)
+    
+    # aiohttp web-serverini ishga tushirish (Webhook uchun)
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, payhamyon_webhook_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, WEB_SERVER_HOST, WEB_SERVER_PORT)
+    await site.start()
+    
+    logging.info(f"Webhook server running on http://{WEB_SERVER_HOST}:{WEB_SERVER_PORT}{WEBHOOK_PATH}")
+
+    # Polling orqali bot so'rovlarini qabul qilish
     await dp.start_polling(bot)
 
 
