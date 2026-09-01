@@ -290,8 +290,8 @@ async def show_purchase_rules(message: types.Message):
     rules_text = (
         "❗️ Muhim xarid qoidasi!\n\n"
         "📹 Xarid qilish tugmasini bosishdan oldin uzluksiz ekran videosini (Screen Record) yoqing!\n\n"
-        "Videoda botdan kod olinishi, nusxalanib darhol saytga qo'yilishi kesilmasdan ko'rinishi shart.\n\n"
-        "⚠️ Aks holda e'tirozlar ko'rib chiqilmaydi!\n\n"
+        "Videoda botdan kod olinishi, nusxalanib (Copy) darhol Bulldrop saytiga qo'yilishi (Paste) va faolllashtirilishi kesilmasdan ko'rinishi shart.\n\n"
+        "Videoda botdan kod olinishi, nusxalanib (Copy) darhol Bulldrop saytiga qo'yilishi (Paste) va faolllashtirilishi kesilmasdan ko'rinishi shart.\n\n"
         "👇 Qoidaga rozilik bildirsangiz, quyidagi tugmani bosing:"
     )
     confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
