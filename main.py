@@ -169,7 +169,7 @@ class AdminUserOpState(StatesGroup):
 # --- KEYBOARDS ---
 def main_menu(user_id: int):
     buttons = [
-        [KeyboardButton(text="🎁 Promokod sotib olish"), KeyboardButton(text="➕ Promokod sotish")],
+        [KeyboardButton(text="🎁 Promokod sotib olish"), KeyboardButton(text="🛒 Promokod sotish")],
         [KeyboardButton(text="💳 Balans"), KeyboardButton(text="💳 Balans to'ldirish")]
     ]
     if user_id == ADMIN_ID:
@@ -291,7 +291,7 @@ async def show_purchase_rules(message: types.Message):
         "❗️ Muhim xarid qoidasi!\n\n"
         "📹 Xarid qilish tugmasini bosishdan oldin uzluksiz ekran videosini (Screen Record) yoqing!\n\n"
         "Videoda botdan kod olinishi, nusxalanib (Copy) darhol Bulldrop saytiga qo'yilishi (Paste) va faolllashtirilishi kesilmasdan ko'rinishi shart.\n\n"
-        "Videoda botdan kod olinishi, nusxalanib (Copy) darhol Bulldrop saytiga qo'yilishi (Paste) va faolllashtirilishi kesilmasdan ko'rinishi shart.\n\n"
+        "⚠️ Aks holda "ishlamadi" yoki "ishlatilgan" degan e'tirozlar ko'rib chiqilmaydi va pul qaytarilmaydi.\n\n"
         "👇 Qoidaga rozilik bildirsangiz, quyidagi tugmani bosing:"
     )
     confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
