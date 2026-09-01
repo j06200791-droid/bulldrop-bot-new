@@ -135,11 +135,21 @@ class AdminPMState(StatesGroup):
     waiting_for_code = State()
 
 
+class UserAddPMState(StatesGroup):
+    waiting_for_category = State()
+    waiting_for_code = State()
+
+
 class AdminBroadcastState(StatesGroup):
     waiting_for_message = State()
 
 
 class AdminEditPriceState(StatesGroup):
+    waiting_for_category = State()
+    waiting_for_new_price = State()
+
+
+class AdminEditUserSellPriceState(StatesGroup):
     waiting_for_category = State()
     waiting_for_new_price = State()
 
@@ -159,7 +169,7 @@ class AdminUserOpState(StatesGroup):
 # --- KEYBOARDS ---
 def main_menu(user_id: int):
     buttons = [
-        [KeyboardButton(text="🎁 Promokod sotib olish")],
+        [KeyboardButton(text="🎁 Promokod sotib olish"), KeyboardButton(text="➕ Promokod sotish")],
         [KeyboardButton(text="💳 Balans"), KeyboardButton(text="💳 Balans to'ldirish")]
     ]
     if user_id == ADMIN_ID:
@@ -180,7 +190,8 @@ def topup_methods_keyboard():
 def admin_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="➕ PM qo'shish"), KeyboardButton(text="📦 PM qoldiq"), KeyboardButton(text="✏️ PM narxini o'zgartirish")],
+            [KeyboardButton(text="➕ PM qo'shish"), KeyboardButton(text="📦 PM qoldiq")],
+            [KeyboardButton(text="✏️ PM narxini o'zgartirish"), KeyboardButton(text="🏷️ Foydalanuvchi sotish narxi")],
             [KeyboardButton(text="🔑 Kodlar soni"), KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="💰 Balans +"), KeyboardButton(text="💸 Balans -")],
             [KeyboardButton(text="👤 User ma'lumot"), KeyboardButton(text="🚫 Ban")],
@@ -217,6 +228,21 @@ async def pm_menu_keyboard():
     ])
 
 
+async def user_sell_menu_keyboard():
+    user_sell_prices = await db.get_user_sell_prices() if hasattr(db, "get_user_sell_prices") else {}
+    default_sell_prices = {"24": 1000, "49": 2500, "99": 7000, "149": 13000, "179": 15000, "199": 18000}
+
+    # O'ZGARISH 2: Tugmalardagi "(0 ta bor)" o'rniga shunchaki "Sotish" yozuvi qilindi
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🎁 24 lik — {user_sell_prices.get('24', default_sell_prices['24']):,} so'm — Sotish", callback_data="sellcat_24")],
+        [InlineKeyboardButton(text=f"🎁 49 lik — {user_sell_prices.get('49', default_sell_prices['49']):,} so'm — Sotish", callback_data="sellcat_49")],
+        [InlineKeyboardButton(text=f"🎁 99 lik — {user_sell_prices.get('99', default_sell_prices['99']):,} so'm — Sotish", callback_data="sellcat_99")],
+        [InlineKeyboardButton(text=f"🎁 149 lik — {user_sell_prices.get('149', default_sell_prices['149']):,} so'm — Sotish", callback_data="sellcat_149")],
+        [InlineKeyboardButton(text=f"🎁 179 lik — {user_sell_prices.get('179', default_sell_prices['179']):,} so'm — Sotish", callback_data="sellcat_179")],
+        [InlineKeyboardButton(text=f"🎁 199 lik — {user_sell_prices.get('199', default_sell_prices['199']):,} so'm — Sotish", callback_data="sellcat_199")]
+    ])
+
+
 # --- MIDDLEWARES ---
 @dp.message.outer_middleware()
 async def ban_middleware(handler, event, data):
@@ -234,10 +260,6 @@ async def global_back_handler(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     await state.clear()
     
-    if current_state in [TopUpState.waiting_for_auto_amount.state, TopUpState.waiting_for_manual_amount.state, TopUpState.waiting_for_receipt.state]:
-        await message.answer("Bosh menyuga qaytdingiz:", reply_markup=main_menu(message.from_user.id))
-        return
-
     if current_state and current_state.startswith("Admin"):
         await message.answer("Admin panelga qaytdingiz:", reply_markup=admin_menu_keyboard())
         return
@@ -268,15 +290,13 @@ async def show_purchase_rules(message: types.Message):
     rules_text = (
         "❗️ Muhim xarid qoidasi!\n\n"
         "📹 Xarid qilish tugmasini bosishdan oldin uzluksiz ekran videosini (Screen Record) yoqing!\n\n"
-        "Videoda botdan kod olinishi, nusxalanib (Copy) darhol Bulldrop saytiga qo'yilishi (Paste) va faolllashtirilishi kesilmasdan ko'rinishi shart.\n\n"
-        "⚠️ Aks holda \"ishlamadi\" yoki \"ishlatilgan\" degan e'tirozlar ko'rib chiqilmaydi va pul qaytarilmaydi.\n\n"
+        "Videoda botdan kod olinishi, nusxalanib darhol saytga qo'yilishi kesilmasdan ko'rinishi shart.\n\n"
+        "⚠️ Aks holda e'tirozlar ko'rib chiqilmaydi!\n\n"
         "👇 Qoidaga rozilik bildirsangiz, quyidagi tugmani bosing:"
     )
-    
     confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ ROZIMAN", callback_data="agree_rules")]
     ])
-    
     await message.answer(rules_text, reply_markup=confirm_kb)
 
 
@@ -291,7 +311,6 @@ async def show_pm_list_after_rules(call: types.CallbackQuery):
 async def process_buy_pm(call: types.CallbackQuery):
     category = call.data.split("_")[1]
     prices = await db.get_pm_prices()
-    
     default_prices = {"24": 1500, "49": 3500, "99": 9000, "149": 16000, "179": 18000, "199": 21000}
     price = prices.get(category, default_prices.get(category, 0))
     
@@ -307,13 +326,65 @@ async def process_buy_pm(call: types.CallbackQuery):
         await call.answer("❌ Afsuski, bu toifada hozirda PM qolmagan!", show_alert=True)
         return
 
-    pm_code = await db.buy_pm_code(category)
-    if not pm_code:
+    # Kodni egasi bilan birga olish (agar funksiya mavjud bo'lsa)
+    if hasattr(db, "buy_pm_code_with_owner"):
+        pm_data = await db.buy_pm_code_with_owner(category)
+    else:
+        code = await db.buy_pm_code(category)
+        pm_data = (code, ADMIN_ID) if code else None
+
+    if not pm_data:
         await call.answer("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring!", show_alert=True)
         return
 
+    pm_code, uploader_id = pm_data
+
+    # Xaridor balansidan pulni ayirish
     await db.add_user_balance(user_id, -price)
     
+    # Agar kodni boshqa foydalanuvchi sotuvga qo'ygan bo'lsa
+    if uploader_id and uploader_id != ADMIN_ID:
+        user_sell_prices = await db.get_user_sell_prices() if hasattr(db, "get_user_sell_prices") else {}
+        default_sell_prices = {"24": 1000, "49": 2500, "99": 7000, "149": 13000, "179": 15000, "199": 18000}
+        earned_amount = user_sell_prices.get(category, default_sell_prices.get(category, 1000))
+        
+        # Sotuvchiga xabar yuborish
+        try:
+            await bot.send_message(
+                uploader_id,
+                f"🎉 **Tabriklaymiz! Siz sotuvga qo'ygan promokod sotildi!**\n\n"
+                f"📦 Toifa: `{category} PM`\n"
+                f"💰 Sizga beriladigan summa: **{earned_amount:,} so'm**\n\n"
+                f"⚠️ Admin tez orada sizdan karta raqamini so'raydi va pulingizni o'tkazib beradi!",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+        # Adminga xabar yuborish (O'ZGARISH 1: ID o'rniga username chiqarish)
+        try:
+            sotuvchi_str = f"ID: `{uploader_id}`"
+            try:
+                chat_member = await bot.get_chat(uploader_id)
+                if chat_member.username:
+                    sotuvchi_str = f"@{chat_member.username}"
+                elif chat_member.first_name:
+                    sotuvchi_str = f"[{chat_member.first_name}](tg://user?id={uploader_id})"
+            except Exception:
+                pass
+
+            await bot.send_message(
+                ADMIN_ID,
+                f"🚨 **Foydalanuvchi promokodi sotildi!**\n\n"
+                f"📦 Toifa: `{category} PM`\n"
+                f"👤 Sotuvchi: {sotuvchi_str}\n"
+                f"💰 To'lanishi kerak bo'lgan summa: **{earned_amount:,} so'm**\n\n"
+                f"💳 Iltimos, foydalanuvchidan karta raqamini so'rab pulini o'tkazib bering!",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logging.error(f"Adminga xabar yuborishda xatolik: {e}")
+
     success_text = (
         "✅ Xarid muvaffaqiyatli amalga oshirildi!\n\n"
         f"Sizning {category} PM promokodingiz:\n"
@@ -321,6 +392,139 @@ async def process_buy_pm(call: types.CallbackQuery):
     )
     await call.message.edit_text(success_text, parse_mode="Markdown")
     await call.answer("Muvaffaqiyatli xarid qilindi!")
+
+
+# --- USER: PROMOKOD SOTISH ---
+@dp.message(F.text == "➕ Promokod sotish")
+async def user_add_pm_warning(message: types.Message):
+    warning_text = (
+        "⚠️ **MUHIM ESLATMA**\n\n"
+        "• PROMODINGIZ SOTILISHI BILAN ADMIN SIZDAN KARTA SO'RAYDI.\n"
+        "• Promokingiz ishlatilgan chiqsa pul berilmaydi!\n"
+        "• Yana kattaroq PM ga kichik PM qo'ysangiz, unda ham pulingiz qaytarib berilmaydi!\n\n"
+        "Qoidaga rozimisiz?"
+    )
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Roziman", callback_data="agree_sell_rules")]
+    ])
+    await message.answer(warning_text, reply_markup=confirm_kb, parse_mode="Markdown")
+
+
+@dp.callback_query(F.data == "agree_sell_rules")
+async def user_add_pm_menu(call: types.CallbackQuery, state: FSMContext):
+    kb = await user_sell_menu_keyboard()
+    info_text = (
+        "📥 **Promokod sotish bo'limi**\n\n"
+        "Quyidagi tugmalardan o'zingiz sotmoqchi bo'lgan promokod turini tanlang"
+    )
+    await state.set_state(UserAddPMState.waiting_for_category)
+    await call.message.edit_text(info_text, reply_markup=kb, parse_mode="Markdown")
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("sellcat_"))
+async def user_select_sell_category(call: types.CallbackQuery, state: FSMContext):
+    cat = call.data.split("_")[1]
+    await state.update_data(selected_cat=cat)
+    await state.set_state(UserAddPMState.waiting_for_code)
+    
+    cancel_kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🔙 Orqaga")]],
+        resize_keyboard=True
+    )
+    await call.message.answer(
+        f"📥 **{cat} PM** kodlarini yuboring.\n"
+        f"(Bir nechta bo'lsa, har birini yangi qatordan yozing):",
+        reply_markup=cancel_kb,
+        parse_mode="Markdown"
+    )
+    await call.answer()
+
+
+@dp.message(UserAddPMState.waiting_for_code)
+async def user_save_pm(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    cat = data.get("selected_cat")
+    codes = message.text.strip().split("\n")
+    user_id = message.from_user.id
+    
+    added_count = 0
+    for code in codes:
+        if code.strip():
+            if hasattr(db, "add_user_pm_code_with_owner"):
+                await db.add_user_pm_code_with_owner(cat, code.strip(), user_id)
+            else:
+                await db.add_pm_code(cat, code.strip())
+            added_count += 1
+            
+    await message.answer(
+        f"✅ {added_count} ta {cat} PM muvaffaqiyatli qabul qilindi va bazaga qo'shildi!\n"
+        f"🔍 Kodlar sotilgandan so'ng sizga xabar keladi va admin karta so'raydi.",
+        reply_markup=main_menu(user_id)
+    )
+    await state.clear()
+
+
+# --- ADMIN: FOYDALANUVCHIDAN SOTIB OLISH NARXINI SOZLASH ---
+@dp.message(F.text == "🏷️ Foydalanuvchi sotish narxi")
+async def edit_user_sell_price_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    user_sell_prices = await db.get_user_sell_prices() if hasattr(db, "get_user_sell_prices") else {}
+    default_sell_prices = {"24": 1000, "49": 2500, "99": 7000, "149": 13000, "179": 15000, "199": 18000}
+    
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🏷️ 24 PM narxi"), KeyboardButton(text="🏷️ 49 PM narxi")],
+            [KeyboardButton(text="🏷️ 99 PM narxi"), KeyboardButton(text="🏷️ 149 PM narxi")],
+            [KeyboardButton(text="🏷️ 179 PM narxi"), KeyboardButton(text="🏷️ 199 PM narxi")],
+            [KeyboardButton(text="🔙 Orqaga")]
+        ],
+        resize_keyboard=True
+    )
+    
+    text = (
+        "🏷️ **Foydalanuvchilar olib keladigan PM uchun to'lov narxlari:**\n\n"
+        f"• 24 PM: {user_sell_prices.get('24', default_sell_prices['24']):,} so'm\n"
+        f"• 49 PM: {user_sell_prices.get('49', default_sell_prices['49']):,} so'm\n"
+        f"• 99 PM: {user_sell_prices.get('99', default_sell_prices['99']):,} so'm\n"
+        f"• 149 PM: {user_sell_prices.get('149', default_sell_prices['149']):,} so'm\n"
+        f"• 179 PM: {user_sell_prices.get('179', default_sell_prices['179']):,} so'm\n"
+        f"• 199 PM: {user_sell_prices.get('199', default_sell_prices['199']):,} so'm\n\n"
+        "Qaysi toifadagi foydalanuvchi narxini o'zgartirmoqchisiz?"
+    )
+    await state.set_state(AdminEditUserSellPriceState.waiting_for_category)
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+
+@dp.message(AdminEditUserSellPriceState.waiting_for_category)
+async def process_user_sell_category_select(message: types.Message, state: FSMContext):
+    cat = message.text.replace("🏷️ ", "").replace(" PM narxi", "").strip()
+    if cat not in ["24", "49", "99", "149", "179", "199"]:
+        await message.answer("Iltimos, tugmalardan birini tanlang!")
+        return
+
+    await state.update_data(edit_cat=cat)
+    await state.set_state(AdminEditUserSellPriceState.waiting_for_new_price)
+    await message.answer(f"💰 {cat} PM uchun foydalanuvchiga to'lanadigan yangi narxni kiriting (so'mda):", reply_markup=back_keyboard())
+
+
+@dp.message(AdminEditUserSellPriceState.waiting_for_new_price)
+async def process_user_sell_new_price(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Iltimos, faqat raqam kiriting!")
+        return
+
+    data = await state.get_data()
+    cat = data.get("edit_cat")
+    new_price = int(message.text)
+
+    if hasattr(db, "update_user_sell_price"):
+        await db.update_user_sell_price(cat, new_price)
+        
+    await message.answer(f"✅ {cat} PM uchun foydalanuvchi sotish narxi {new_price:,} so'm etib belgilandi!", reply_markup=admin_menu_keyboard())
+    await state.clear()
 
 
 # --- USER: BALANS VA TO'LOV HANDLERLARI ---
@@ -335,7 +539,6 @@ async def start_topup_select(message: types.Message):
     await message.answer("To'lov usulini tanlang:", reply_markup=topup_methods_keyboard())
 
 
-# --- OPTION A: AVTO TO'LDIRISH (PAYHAMYON) ---
 @dp.callback_query(F.data == "pay_auto")
 async def start_auto_topup(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(TopUpState.waiting_for_auto_amount)
@@ -397,7 +600,6 @@ async def process_auto_amount(message: types.Message, state: FSMContext):
         await msg.edit_text(f"⚠️ To'lov yaratishda xatolik yuz berdi: {err}")
 
 
-# --- PAYHAMYON TO'LOVNI TEKSHIRISH TUGMASI ---
 @dp.callback_query(F.data.startswith("checkpay_"))
 async def check_auto_pay(call: types.CallbackQuery):
     token = call.data.split("_")[1]
@@ -446,7 +648,6 @@ async def cancel_auto_pay(call: types.CallbackQuery):
     await call.answer("Bekor qilindi")
 
 
-# --- OPTION B: ADMIN YORDAMIDA TO'LDIRISH ---
 @dp.callback_query(F.data == "pay_admin")
 async def start_admin_topup(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(TopUpState.waiting_for_manual_amount)
@@ -511,7 +712,6 @@ async def process_receipt(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-# --- ADMIN: MANUAL TO'LOV TASDIQLASH/RAD ETISH ---
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_payment(call: types.CallbackQuery):
     if call.from_user.id != ADMIN_ID:
@@ -647,7 +847,10 @@ async def admin_save_pm(message: types.Message, state: FSMContext):
     added_count = 0
     for code in codes:
         if code.strip():
-            await db.add_pm_code(cat, code.strip())
+            if hasattr(db, "add_user_pm_code_with_owner"):
+                await db.add_user_pm_code_with_owner(cat, code.strip(), ADMIN_ID)
+            else:
+                await db.add_pm_code(cat, code.strip())
             added_count += 1
             
     await message.answer(f"✅ {added_count} ta {cat} PM bazaga muvaffaqiyatli qo'shildi!", reply_markup=admin_menu_keyboard())
@@ -860,7 +1063,7 @@ async def send_broadcast(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-# --- BOTNI VA WEBHOOK SERVERNI BIRGA ISHGA TUSHIRISH ---
+# --- BOTni VA WEBHOOK SERVERNI BIRGA ISHGA TUSHIRISH ---
 async def main():
     await db.init_db()
     logging.basicConfig(level=logging.INFO)
