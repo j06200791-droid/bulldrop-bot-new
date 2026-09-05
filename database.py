@@ -13,6 +13,21 @@ async def init_db():
             )
         """)
         
+        # Promokodlar jadvali (uploader_id orqaimport aiosqlite
+
+DB_NAME = "database.db"
+
+async def init_db():
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Foydalanuvchilar jadvali
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                balance INTEGER DEFAULT 0,
+                banned INTEGER DEFAULT 0
+            )
+        """)
+        
         # Promokodlar jadvali (uploader_id orqali kimnikiligini bilish uchun)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS pm_codes (
@@ -162,7 +177,6 @@ async def get_user_sell_prices() -> dict:
         async with db.execute("SELECT category, price FROM user_sell_prices") as cursor:
             rows = await cursor.fetchall()
             return {row[0]: row[1] for row in rows}
-
 async def update_user_sell_price(category: str, price: int):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("INSERT INTO user_sell_prices (category, price) VALUES (?, ?) ON CONFLICT(category) DO UPDATE SET price = ?", (category, price, price))
@@ -194,3 +208,305 @@ async def mark_payment_as_paid(token: str):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("UPDATE payments SET status = 'paid' WHERE token = ?", (token,))
         await db.commit()
+
+# ============================================================
+# QO'SHIMCHA ADMIN / STATISTIKA / PROMO / VIP / SUPPORT
+# ============================================================
+
+async def init_extra_db():
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("""CREATE TABLE IF NOT EXISTS promo_bonuses (
+            code TEXT PRIMARY KEY,
+            amount INTEGER NOT NULL,
+            max_uses INTEGER DEFAULT 1,
+            used_count INTEGER DEFAULT 0,
+            active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS promo_redemptions (
+            code TEXT,
+            user_id INTEGER,
+            redeemed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(code, user_id)
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS vip_users (
+            user_id INTEGER PRIMARY KEY,
+            expires_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS bot_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            event_type TEXT NOT NULL,
+            amount INTEGER DEFAULT 0,
+            category TEXT,
+            details TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS support_tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            message TEXT,
+            status TEXT DEFAULT 'open',
+            admin_reply TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            closed_at TEXT
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS admin_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER,
+            action TEXT,
+            target_id INTEGER,
+            amount INTEGER DEFAULT 0,
+            details TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS bot_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )""")
+        await db.commit()
+
+
+# init_db ga qo'shimcha jadvallarni ham ishga tushirish
+_original_init_db = init_db
+async def init_db():
+    await _original_init_db()
+    await init_extra_db()
+
+
+async def log_event(user_id, event_type, amount=0, category=None, details=None):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO bot_events (user_id,event_type,amount,category,details) VALUES (?,?,?,?,?)",
+            (user_id, event_type, amount, category, details)
+        )
+        await db.commit()
+
+
+async def log_admin_action(admin_id, action, target_id=None, amount=0, details=None):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO admin_logs (admin_id,action,target_id,amount,details) VALUES (?,?,?,?,?)",
+            (admin_id, action, target_id, amount, details)
+        )
+        await db.commit()
+
+
+async def create_promo_bonus(code, amount, max_uses=1):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO promo_bonuses(code,amount,max_uses,used_count,active) VALUES(?,?,?,0,1)",
+            (code, amount, max_uses)
+        )
+        await db.commit()
+
+
+async def redeem_promo_bonus(code, user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT amount,max_uses,used_count,active FROM promo_bonuses WHERE code=?",
+            (code,)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None, "not_found"
+        amount, max_uses, used_count, active = row
+        if not active or used_count >= max_uses:
+            return None, "inactive"
+        async with db.execute(
+            "SELECT 1 FROM promo_redemptions WHERE code=? AND user_id=?",
+            (code, user_id)
+        ) as cur:
+            if await cur.fetchone():
+                return None, "already"
+        await db.execute(
+            "INSERT INTO promo_redemptions(code,user_id) VALUES(?,?)",
+            (code, user_id)
+        )
+        await db.execute(
+            "UPDATE promo_bonuses SET used_count=used_count+1 WHERE code=?",
+            (code,)
+        )
+        await db.commit()
+        return amount, "ok"
+
+
+async def delete_promo_bonus(code):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM promo_bonuses WHERE code=?", (code,))
+        await db.commit()
+
+
+async def get_promo_bonuses():
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT code,amount,max_uses,used_count,active,created_at FROM promo_bonuses ORDER BY created_at DESC"
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def set_vip(user_id, days):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            """INSERT INTO vip_users(user_id,expires_at)
+               VALUES(?, datetime('now', ? || ' days'))
+               ON CONFLICT(user_id) DO UPDATE SET expires_at=datetime(
+                   CASE WHEN vip_users.expires_at > datetime('now')
+                        THEN vip_users.expires_at ELSE datetime('now') END,
+                   ? || ' days')""",
+            (user_id, str(days), str(days))
+        )
+        await db.commit()
+
+
+async def is_vip(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT expires_at FROM vip_users WHERE user_id=? AND expires_at > datetime('now')",
+            (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
+async def remove_vip(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM vip_users WHERE user_id=?", (user_id,))
+        await db.commit()
+
+
+async def get_vip_users():
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT user_id,expires_at FROM vip_users WHERE expires_at > datetime('now') ORDER BY expires_at"
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def create_support_ticket(user_id, message):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cur = await db.execute(
+            "INSERT INTO support_tickets(user_id,message) VALUES(?,?)",
+            (user_id, message)
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def get_open_tickets():
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT id,user_id,message,created_at FROM support_tickets WHERE status='open' ORDER BY id DESC"
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def reply_support_ticket(ticket_id, reply):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT user_id FROM support_tickets WHERE id=?", (ticket_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        await db.execute(
+            "UPDATE support_tickets SET status='closed',admin_reply=?,closed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (reply, ticket_id)
+        )
+        await db.commit()
+        return row[0]
+
+
+async def get_event_stats():
+    async with aiosqlite.connect(DB_NAME) as db:
+        result = {}
+        async with db.execute(
+            "SELECT COUNT(*) FROM bot_events WHERE date(created_at)=date('now')"
+        ) as cur:
+            result["events_today"] = (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM bot_events WHERE event_type IN ('topup','sale_income') AND date(created_at)=date('now')"
+        ) as cur:
+            result["money_today"] = (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM bot_events WHERE event_type='purchase' AND date(created_at)=date('now')"
+        ) as cur:
+            result["purchases_today"] = (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM bot_events WHERE event_type='purchase' AND date(created_at)=date('now')"
+        ) as cur:
+            result["sales_today"] = (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM bot_events WHERE event_type='purchase' AND date(created_at)>=date('now','-6 days')"
+        ) as cur:
+            result["purchases_week"] = (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM bot_events WHERE event_type='purchase' AND date(created_at)>=date('now','-29 days')"
+        ) as cur:
+            result["sales_month"] = (await cur.fetchone())[0]
+        return result
+
+
+async def get_user_events(user_id, limit=10):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT event_type,amount,category,details,created_at FROM bot_events WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (user_id, limit)
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def get_open_tickets_count():
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT COUNT(*) FROM support_tickets WHERE status='open'") as cur:
+            return (await cur.fetchone())[0]
+
+
+async def get_setting(key, default=None):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT value FROM bot_settings WHERE key=?", (key,)) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else default
+
+
+async def set_setting(key, value):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO bot_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, str(value))
+        )
+# database.py ga qo'shiladigan qism
+async def init_sub_db():
+  async with aiosqlite.connect(DB_NAME) as conn:
+    await conn.execute("""
+            CREATE TABLE IF NOT EXISTS mandatory_channels (
+                channel_id TEXT PRIMARY KEY,
+                channel_name TEXT
+            )
+        """)
+    await conn.commit()
+
+
+async def get_mandatory_channels():
+  async with aiosqlite.connect(DB_NAME) as conn:
+    async with conn.execute(
+        "SELECT channel_id, channel_name FROM mandatory_channels"
+    ) as cursor:
+      return await cursor.fetchall()
+
+
+async def add_mandatory_channel(channel_id: str, channel_name: str):
+  async with aiosqlite.connect(DB_NAME) as conn:
+    await conn.execute(
+        "INSERT OR REPLACE INTO mandatory_channels (channel_id, channel_name)"
+        " VALUES (?, ?)",
+        (channel_id, channel_name),
+    )
+    await conn.commit()
+
+
+async def remove_mandatory_channel(channel_id: str):
+  async with aiosqlite.connect(DB_NAME) as conn:
+    await conn.execute(
+        "DELETE FROM mandatory_channels WHERE channel_id = ?", (channel_id,)
+    )
+    await conn.commit()
