@@ -1,3 +1,4 @@
+
 import asyncio
 import logging
 import random
@@ -6,6 +7,7 @@ import json
 import urllib.request
 import urllib.error
 import time
+import datetime
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -24,12 +26,12 @@ import database as db
 # --- CONFIGURATION ---
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8938283613:AAH2P8pk2M8LrICkbYT-fo9supIVL6Rlj6U")
-ADMIN_ID = 5974947091
+ADMIN_ID = int(os.getenv("ADMIN_ID", "5974947091"))
 
 # PayHamyon Sozlamalari
-SHOP_ID = 20
-SHOP_KEY = "V04nimOvjY5NGkXtp6qofufRcFB82tT"
-BASE_URL = "https://user91.hostx.uz"
+SHOP_ID = int(os.getenv("SHOP_ID", "20"))
+SHOP_KEY = os.getenv("SHOP_KEY", "V04nimOvjY5NGkXtp6qofufRcFB82tT")
+BASE_URL = os.getenv("PAYHAMYON_BASE_URL", "https://user91.hostx.uz")
 
 # Webhook Server Sozlamalari
 WEBHOOK_PATH = "/payhamyon/webhook"
@@ -40,6 +42,11 @@ WEB_SERVER_PORT = int(os.getenv("PORT", 8080))
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher(storage=MemoryStorage())
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN .env orqali berilishi kerak")
+if not SHOP_KEY:
+    logging.warning("SHOP_KEY .env orqali berilmagan; PayHamyon avto tolovlari ishlamaydi.")
 
 
 # --- PAYHAMYON API FUNKSIYALARI ---
@@ -103,10 +110,10 @@ async def payhamyon_webhook_handler(request: web.Request):
                 user_id = await db.get_user_id_by_token(token) if hasattr(db, "get_user_id_by_token") else None
                 
                 if user_id and amount:
-                    await db.add_user_balance(user_id, int(amount))
-                    await db.log_event(user_id, 'topup', int(amount))
-                    if hasattr(db, "mark_payment_as_paid"):
-                        await db.mark_payment_as_paid(token)
+                    credited_user = await db.credit_payment_once(token, int(amount)) if hasattr(db, "credit_payment_once") else None
+                    if not credited_user:
+                        return web.json_response({"status": "ok"}, status=200)
+                    user_id = credited_user
                         
                     new_bal = await db.get_user_balance(user_id)
                     try:
@@ -167,21 +174,20 @@ class AdminUserOpState(StatesGroup):
     waiting_for_ban_id = State()
     waiting_for_unban_id = State()
 
-
+#  KeyboardButton(text="➕ Promokod sotish")]
 # --- KEYBOARDS ---
 def main_menu(user_id: int):
     buttons = [
         [KeyboardButton(text="🎁 Promokod sotib olish"),],
-        #   KeyboardButton(text="➕ Promokod sotish")],
-        [KeyboardButton(text="💳 Balans"), KeyboardButton(text="💳 Balans to'ldirish")],
-        # [KeyboardButton(text="🎟️ Bonus kod"), KeyboardButton(text="👑 VIP")],
-        # [KeyboardButton(text="🎫 Support")]
+        [KeyboardButton(text="👤 Profil"), KeyboardButton(text="💳 Balans to'ldirish")],
+        [KeyboardButton(text="🎟️ Bonus kod"), KeyboardButton(text="🛒 Xaridlarim")],
+        [KeyboardButton(text="💳 To'lovlarim"), KeyboardButton(text="🤝 Referral")],
+        [KeyboardButton(text="🎁 Kunlik bonus"), KeyboardButton(text="🏆 Reyting")],
+       
     ]
     if user_id == ADMIN_ID:
         buttons.append([KeyboardButton(text="⚙️ Admin Menyu")])
-        
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-
 
 def topup_methods_keyboard():
     return InlineKeyboardMarkup(
@@ -195,21 +201,19 @@ def topup_methods_keyboard():
 def admin_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="➕ PM qo'shish"), KeyboardButton(text="📦 PM qoldiq")],
+            [KeyboardButton(text="👤 USERLAR"), KeyboardButton(text="💰 BALANS")],
+            [KeyboardButton(text="🛒 SAVDO"), KeyboardButton(text="💳 TO'LOVLAR")],
+            [KeyboardButton(text="📦 QOLDIQ"), KeyboardButton(text="🎁 PROMO")],
+            [KeyboardButton(text="🎫 SUPPORT"), KeyboardButton(text="📢 REKLAMA")],
+            [KeyboardButton(text="📊 STATISTIKA"), KeyboardButton(text="📝 LOG")],
+            [KeyboardButton(text="⚙️ SOZLAMALAR"), KeyboardButton(text="🛡️ XAVFSIZlik")],
+            [KeyboardButton(text="📢 Majburiy obuna"), KeyboardButton(text="➕ PM qo'shish")],
             [KeyboardButton(text="✏️ PM narxini o'zgartirish"), KeyboardButton(text="🏷️ Foydalanuvchi sotish narxi")],
-            [KeyboardButton(text="🔑 Kodlar soni"), KeyboardButton(text="📊 Statistika")],
+            [KeyboardButton(text="📈 Daromad"), KeyboardButton(text="🔎 User qidirish")],
             [KeyboardButton(text="💰 Balans +"), KeyboardButton(text="💸 Balans -")],
-            [KeyboardButton(text="👤 User ma'lumot"), KeyboardButton(text="🔎 User qidirish")],
             [KeyboardButton(text="🚫 Ban"), KeyboardButton(text="✅ Unban")],
-            [KeyboardButton(text="🎁 Promo boshqaruvi"), KeyboardButton(text="👑 VIP boshqaruvi")],
-            [KeyboardButton(text="🛒 Savdo tarixi"), KeyboardButton(text="💳 To'lovlar tarixi")],
-            [KeyboardButton(text="📈 Daromad"), KeyboardButton(text="🎫 Support")],
-            [KeyboardButton(text="📢 Xabar yuborish"), KeyboardButton(text="📝 Admin log")],
-            [KeyboardButton(text="⚙️ Sozlamalar"), KeyboardButton(text="⬅️ Bosh menyu")]
-        ],
-        resize_keyboard=True
-    )
-
+            [KeyboardButton(text="👤 User ma'lumot"), KeyboardButton(text="⬅️ Bosh menyu")]
+        ], resize_keyboard=True)
 
 def back_keyboard():
     return ReplyKeyboardMarkup(
@@ -218,24 +222,20 @@ def back_keyboard():
     )
 
 
-async def pm_menu_keyboard():
+async def pm_menu_keyboard(user_id: int = None):
     prices = await db.get_pm_prices()
-    c24 = await db.get_pm_count("24")
-    c49 = await db.get_pm_count("49")
-    c99 = await db.get_pm_count("99")
-    c149 = await db.get_pm_count("149")
-    c179 = await db.get_pm_count("179")
-    c199 = await db.get_pm_count("199")
-
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🎁 24 lik — {prices.get('24', 1500):,} so'm ({c24} ta bor)", callback_data="buy_24")],
-        [InlineKeyboardButton(text=f"🎁 49 lik — {prices.get('49', 3500):,} so'm ({c49} ta bor)", callback_data="buy_49")],
-        [InlineKeyboardButton(text=f"🎁 99 lik — {prices.get('99', 9000):,} so'm ({c99} ta bor)", callback_data="buy_99")],
-        [InlineKeyboardButton(text=f"🎁 149 lik — {prices.get('149', 16000):,} so'm ({c149} ta bor)", callback_data="buy_149")],
-        [InlineKeyboardButton(text=f"🎁 179 lik — {prices.get('179', 18000):,} so'm ({c179} ta bor)", callback_data="buy_179")],
-        [InlineKeyboardButton(text=f"🎁 199 lik — {prices.get('199', 21000):,} so'm ({c199} ta bor)", callback_data="buy_199")]
-    ])
-
+    default_prices = {"24": 1500, "49": 3500, "99": 9000, "149": 16000, "179": 18000, "199": 21000}
+    stock = {cat: await db.get_pm_count(cat) for cat in default_prices}
+    rows = []
+    for cat, base in default_prices.items():
+        base = prices.get(cat, base)
+        final = base
+        # Qoldiq 0 bo'lsa ham kategoriya ko'rinadi: "(0 ta bor)".
+        label = f"🎁 {cat} lik — {final:,} so'm ({stock[cat]} ta bor)"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"buy_{cat}")])
+    if not rows:
+        rows.append([InlineKeyboardButton(text="❌ Hozircha PM qolmagan", callback_data="no_stock")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 async def user_sell_menu_keyboard():
     user_sell_prices = await db.get_user_sell_prices() if hasattr(db, "get_user_sell_prices") else {}
@@ -251,6 +251,68 @@ async def user_sell_menu_keyboard():
     ])
 
 
+# ===================== MAJBURIY OBUNA =====================
+def _channel_join_url(chat_id, invite_link=None):
+    if invite_link:
+        return invite_link
+    value = str(chat_id).strip()
+    if value.startswith("@"):
+        return f"https://t.me/{value[1:]}"
+    return None
+
+async def _subscription_check(user_id: int):
+    if user_id == ADMIN_ID:
+        return True, []
+    if not await db.is_required_subscription_enabled():
+        return True, []
+    channels = await db.get_required_channels()
+    if not channels:
+        return True, []
+    missing = []
+    for row in channels:
+        cid, chat_id, invite_link, title, active = row
+        try:
+            member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+            is_member = member.status in ("member", "administrator", "creator")
+            if member.status == "restricted" and getattr(member, "is_member", False):
+                is_member = True
+            if not is_member:
+                missing.append(row)
+        except Exception as exc:
+            logging.warning("Majburiy obuna tekshiruvi xatosi %s: %s", chat_id, exc)
+            missing.append(row)
+    return len(missing) == 0, missing
+
+def _subscription_keyboard(missing):
+    rows = []
+    for row in missing:
+        _, chat_id, invite_link, title, _ = row
+        url = _channel_join_url(chat_id, invite_link)
+        label = f"📢 {title or chat_id}"
+        if url:
+            rows.append([InlineKeyboardButton(text=label, url=url)])
+    rows.append([InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_subscription")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+async def _send_subscription_required(message_or_call):
+    user_id = message_or_call.from_user.id
+    ok, missing = await _subscription_check(user_id)
+    if ok:
+        return True
+    text = (
+        "🔒 **Botdan foydalanish uchun majburiy obuna**\n\n"
+        "Quyidagi kanallarga obuna bo'ling, so'ng `✅ Obunani tekshirish` tugmasini bosing."
+    )
+    if isinstance(message_or_call, types.CallbackQuery):
+        try:
+            await message_or_call.message.edit_text(text, reply_markup=_subscription_keyboard(missing), parse_mode="Markdown")
+        except Exception:
+            await message_or_call.message.answer(text, reply_markup=_subscription_keyboard(missing), parse_mode="Markdown")
+        await message_or_call.answer("Avval kanallarga obuna bo'ling.", show_alert=True)
+    else:
+        await message_or_call.answer(text, reply_markup=_subscription_keyboard(missing), parse_mode="Markdown")
+    return False
+
 # --- MIDDLEWARES ---
 @dp.message.outer_middleware()
 async def ban_middleware(handler, event, data):
@@ -259,8 +321,51 @@ async def ban_middleware(handler, event, data):
         if user_id != ADMIN_ID and await db.is_user_banned(user_id):
             await event.answer("🚫 Siz botdan foydalanish uchun bloklangansiz!")
             return
+        if hasattr(db, "touch_user"):
+            await db.touch_user(user_id, event.from_user.username, event.from_user.first_name, event.chat.id)
+        if user_id != ADMIN_ID and await db.get_setting("maintenance_mode", "0") == "1":
+            await event.answer("🛠 Bot vaqtincha texnik xizmatda. Iltimos, keyinroq urinib ko'ring.")
+            return
+        if user_id != ADMIN_ID and event.text != "🔙 Orqaga":
+            if not await _send_subscription_required(event):
+                return
     return await handler(event, data)
 
+@dp.callback_query.outer_middleware()
+async def subscription_callback_middleware(handler, event, data):
+    if isinstance(event, types.CallbackQuery) and event.from_user.id != ADMIN_ID:
+        if event.data == "check_subscription":
+            return await handler(event, data)
+        if not await _send_subscription_required(event):
+            return
+    return await handler(event, data)
+
+
+@dp.callback_query(F.data == "check_subscription")
+async def check_subscription_callback(call: types.CallbackQuery):
+    ok, missing = await _subscription_check(call.from_user.id)
+    if ok:
+        await call.message.edit_text("✅ **Obuna tasdiqlandi!**\n\nEndi botdan foydalanishingiz mumkin.", parse_mode="Markdown")
+        await call.answer("Obuna tasdiqlandi!", show_alert=True)
+        await bot.send_message(call.from_user.id, "🏠 Bosh menyu", reply_markup=main_menu(call.from_user.id))
+    else:
+        names = []
+        for row in missing:
+            names.append(str(row[3] or row[1]))
+        detail = "\n".join(f"• {name}" for name in names[:5])
+        await call.answer("❌ Hali barcha kanallarga obuna bo'lmagansiz.", show_alert=True)
+        try:
+            await call.message.edit_text(
+                "🔒 **Obuna hali tasdiqlanmadi**\n\n"
+                "Quyidagi kanal(lar)ga obuna bo'ling va qaytadan tekshiring:\n" + detail,
+                reply_markup=_subscription_keyboard(missing),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            try:
+                await call.message.edit_reply_markup(reply_markup=_subscription_keyboard(missing))
+            except Exception:
+                pass
 
 # --- GLOBAL HANDLERS ---
 @dp.message(F.text == "🔙 Orqaga")
@@ -279,8 +384,18 @@ async def global_back_handler(message: types.Message, state: FSMContext):
 @dp.message(F.text.in_({"⬅️ Bosh menyu", "🏠 Bosh menyu"}))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    await db.get_user_balance(message.from_user.id)
-    await message.answer("Xush kelibsiz! Kerakli bo'limni tanlang:", reply_markup=main_menu(message.from_user.id))
+    uid = message.from_user.id
+    await db.get_user_balance(uid)
+    if hasattr(db, "touch_user"):
+        await db.touch_user(uid, message.from_user.username, message.from_user.first_name, message.chat.id)
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) == 2 and parts[0].startswith("/start"):
+        ref = parts[1].strip().replace("ref_", "")
+        if ref.isdigit() and int(ref) != uid and hasattr(db, "set_referral"):
+            if await db.set_referral(uid, int(ref)):
+                await message.answer("🤝 Referral orqali qo'shildingiz! Do'stingiz bonus oladi.")
+    notice = await db.get_setting("bot_notice", "") if hasattr(db,"get_setting") else ""
+    await message.answer((notice + "\n\n" if notice else "") + "Xush kelibsiz! Kerakli bo'limni tanlang:", reply_markup=main_menu(uid))
 
 
 @dp.message(F.text == "⚙️ Admin Menyu")
@@ -298,7 +413,7 @@ async def show_purchase_rules(message: types.Message):
     rules_text = (
         "❗️ Muhim xarid qoidasi!\n\n"
         "📹 Xarid qilish tugmasini bosishdan oldin uzluksiz ekran videosini (Screen Record) yoqing!\n\n"
-        "Videoda botdan kod olinishi, nusxalanib (Copy) darhol Bulldrop saytiga qo'yilishi (Paste) va faolllashtirilishi kesilmasdan ko'rinishi shart.\n\n"
+        "Videoda botdan kod olinishi, nusxalanib (Copy) darhol Bulldrop saytiga qo'yilishi (Paste) va faollashtirilishi kesilmasdan ko'rinishi shart.\n\n"
         "⚠️ Aks holda 'ishlamadi' yoki 'ishlatilgan' degan e'tirozlar ko'rib chiqilmaydi va pul qaytarilmaydi.\n\n"
         "👇 Qoidaga rozilik bildirsangiz, quyidagi tugmani bosing:"
     )
@@ -310,19 +425,24 @@ async def show_purchase_rules(message: types.Message):
 
 @dp.callback_query(F.data == "agree_rules")
 async def show_pm_list_after_rules(call: types.CallbackQuery):
-    kb = await pm_menu_keyboard()
+    kb = await pm_menu_keyboard(call.from_user.id)
     await call.message.edit_text("Quyidagi tugmalardan birini tanlang:", reply_markup=kb)
     await call.answer()
 
+
+@dp.callback_query(F.data == "no_stock")
+async def no_stock(call: types.CallbackQuery):
+    await call.answer("Hozircha PM qoldiq yo'q.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def process_buy_pm(call: types.CallbackQuery):
     category = call.data.split("_")[1]
     prices = await db.get_pm_prices()
     default_prices = {"24": 1500, "49": 3500, "99": 9000, "149": 16000, "179": 18000, "199": 21000}
-    price = prices.get(category, default_prices.get(category, 0))
+    base_price = prices.get(category, default_prices.get(category, 0))
     
     user_id = call.from_user.id
+    price = base_price
     balance = await db.get_user_balance(user_id)
     
     if balance < price:
@@ -331,23 +451,19 @@ async def process_buy_pm(call: types.CallbackQuery):
 
     stock_count = await db.get_pm_count(category)
     if stock_count <= 0:
-        await call.answer("❌ Afsuski, bu toifada hozirda PM qolmagan!", show_alert=True)
+        await call.answer("❌ Afsuski, bu toifada PM qolmagan!", show_alert=True)
         return
 
-    if hasattr(db, "buy_pm_code_with_owner"):
-        pm_data = await db.buy_pm_code_with_owner(category)
-    else:
-        code = await db.buy_pm_code(category)
-        pm_data = (code, ADMIN_ID) if code else None
-
+    pm_data = await db.purchase_code_atomic(user_id, category, price) if hasattr(db, "purchase_code_atomic") else None
     if not pm_data:
-        await call.answer("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring!", show_alert=True)
+        balance_now = await db.get_user_balance(user_id)
+        if balance_now < price:
+            await call.answer("❌ Hisobingizda mablag' yetarli emas!", show_alert=True)
+        else:
+            await call.answer("❌ Kod tugagan yoki xarid band qilingan. Qayta urinib ko'ring!", show_alert=True)
         return
 
     pm_code, uploader_id = pm_data
-
-    await db.add_user_balance(user_id, -price)
-    await db.log_event(user_id, 'purchase', price, category)
     
     if uploader_id and uploader_id != ADMIN_ID:
         user_sell_prices = await db.get_user_sell_prices() if hasattr(db, "get_user_sell_prices") else {}
@@ -389,10 +505,29 @@ async def process_buy_pm(call: types.CallbackQuery):
         except Exception as e:
             logging.error(f"Adminga xabar yuborishda xatolik: {e}")
 
+    try:
+        ref_bonus = int(await db.get_setting("referral_bonus", "500"))
+        referrer_id = await db.complete_referral_bonus(user_id, ref_bonus) if ref_bonus > 0 else 0
+        if referrer_id:
+            await db.log_event(referrer_id, 'referral_bonus', ref_bonus, details=f'referred_user={user_id}')
+            try:
+                await bot.send_message(referrer_id, f"🤝 Referral bonusi: **+{ref_bonus:,} so'm**", parse_mode="Markdown")
+            except Exception:
+                pass
+    except Exception:
+        logging.exception("Referral bonus error")
+
+    cashback_percent = int(await db.get_setting("cashback_percent", "0")) if hasattr(db,"get_setting") else 0
+    cashback = round(price * cashback_percent / 100)
+    if cashback > 0:
+        await db.add_user_balance(user_id, cashback)
+        await db.log_event(user_id, 'cashback', cashback, category)
+
     success_text = (
         "✅ Xarid muvaffaqiyatli amalga oshirildi!\n\n"
         f"Sizning {category} PM promokodingiz:\n"
         f"`{pm_code}`"
+        + (f"\n\n💸 Cashback: **+{cashback:,} so'm**" if cashback > 0 else "")
     )
     await call.message.edit_text(success_text, parse_mode="Markdown")
     await call.answer("Muvaffaqiyatli xarid qilindi!")
@@ -469,7 +604,7 @@ async def user_save_pm(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-# --- ADMIN: FOYDALANUVCHIDAN SOTIB OLISH NARXINI SOZLASH ---
+# --- ADMIN: FOYDALANUVCHIDAN SOTIB OLish NARXINI SOZLASH ---
 @dp.message(F.text == "🏷️ Foydalanuvchi sotish narxi")
 async def edit_user_sell_price_start(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -535,20 +670,291 @@ async def process_user_sell_new_price(message: types.Message, state: FSMContext)
 class AdminExtraState(StatesGroup):
     waiting_for_user_id = State()
     waiting_for_promo_delete = State()
-    waiting_for_vip_remove = State()
     waiting_for_ticket_reply = State()
     waiting_for_promo_code = State()
     waiting_for_promo_amount = State()
     waiting_for_promo_uses = State()
-    waiting_for_vip_id = State()
-    waiting_for_vip_days = State()
+    waiting_for_promo_expiry = State()
+    waiting_for_promo_target = State()
     waiting_for_ticket_id = State()
     waiting_for_setting = State()
     waiting_for_setting_value = State()
+    waiting_for_required_channel = State()
+    waiting_for_required_remove = State()
+    waiting_for_broadcast_target = State()
+    waiting_for_broadcast_message = State()
+    waiting_for_maintenance = State()
+    waiting_for_cashback = State()
+    waiting_for_referral_bonus = State()
 
 class UserExtraState(StatesGroup):
     waiting_for_bonus_code = State()
     waiting_for_support_message = State()
+
+
+# ============================================================
+# PRO/MAX USER FEATURES
+# ============================================================
+@dp.message(F.text == "👤 Profil")
+async def user_profile(message: types.Message):
+    uid = message.from_user.id
+    p = await db.get_user_profile(uid) if hasattr(db,"get_user_profile") else None
+    level, name = await db.get_user_level(uid) if hasattr(db,"get_user_level") else (1,'Bronze')
+    refs = await db.get_referral_stats(uid) if hasattr(db,"get_referral_stats") else (0,0)
+    username = message.from_user.username or "yo'q"
+    # HTML ishlatiladi: username ichidagi _ kabi belgilar Telegram Markdown parserini buzmaydi.
+    await message.answer(
+        f"👤 <b>PROFIL</b>\n\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"👤 Username: @{username}\n"
+        f"💰 Balans: <b>{(p[3] if p else 0):,} so'm</b>\n"
+        f"🏆 Level: <b>{level} — {name}</b>\n"
+        f"🤝 Referallar: <b>{refs[0]} ta</b>\n"
+        f"💵 Referral bonusi: <b>{refs[1]:,} so'm</b>",
+        parse_mode="HTML"
+    )
+
+@dp.message(F.text == "🛒 Xaridlarim")
+async def user_purchase_history(message: types.Message):
+    rows = await db.get_user_purchase_history(message.from_user.id)
+    text = "🛒 **XARIDLARIM**\n\n" + ("\n".join([f"• {r[3]} — {r[0]} PM — {r[1]:,} so'm" for r in rows]) or "Hali xarid yo'q.")
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message(F.text == "💳 To'lovlarim")
+async def user_payment_history(message: types.Message):
+    rows = await db.get_user_payment_history(message.from_user.id)
+    text = "💳 **TO'LOVLARIM**\n\n" + ("\n".join([f"• {r[1]:,} so'm — {r[2]} — `{r[0]}`" for r in rows]) or "Hali to'lov yo'q.")
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message(F.text == "🤝 Referral")
+async def user_referral(message: types.Message):
+    uid = message.from_user.id
+    total, earned = await db.get_referral_stats(uid)
+    me = await bot.get_me()
+    link = f"https://t.me/{me.username}?start=ref_{uid}"
+    await message.answer(
+        f"🤝 **REFERRAL**\n\n"
+        f"👥 Taklif qilganlaringiz: **{total} ta**\n"
+        f"💰 Ishlangan bonus: **{earned:,} so'm**\n\n"
+        f"🔗 Sizning linkingiz:\n`{link}`\n\n"
+        f"Do'stingiz botga kirganda referral hisoblanadi.",
+        parse_mode="Markdown"
+    )
+
+@dp.message(F.text == "🎁 Kunlik bonus")
+async def daily_bonus(message: types.Message):
+    amount, streak = await db.claim_daily_bonus(message.from_user.id)
+    if amount:
+        await message.answer(f"🎁 **Kunlik bonus olindi!**\n\n💰 +{amount:,} so'm\n🔥 Streak: {streak} kun")
+    else:
+        await message.answer(f"⏳ Bugungi bonusni allaqachon olgansiz.\n🔥 Streak: {streak} kun")
+
+@dp.message(F.text == "🏆 Reyting")
+async def leaderboard(message: types.Message):
+    async with db.aiosqlite.connect(db.DB_NAME) as conn:
+        async with conn.execute("SELECT user_id,COUNT(*) n FROM bot_events WHERE event_type='purchase' GROUP BY user_id ORDER BY n DESC LIMIT 10") as cur:
+            rows = await cur.fetchall()
+    text = "🏆 **TOP 10 XARIDOR**\n\n" + ("\n".join([f"{i}. `{r[0]}` — {r[1]} ta xarid" for i, r in enumerate(rows, 1)]) or "Ma'lumot yo'q.")
+    await message.answer(text, parse_mode="Markdown")
+
+
+# ============================================================
+# PRO/MAX ADMIN MENUS
+# ============================================================
+@dp.message(F.text == "👤 USERLAR")
+async def admin_users_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    s = await db.get_admin_dashboard()
+    await message.answer(
+        f"👤 **USERLAR**\n\n👥 Jami: {s['users']}\n🟢 Faol (7 kun): {s['active']}\n🚫 Banlar boshqaruvi eski panelda mavjud.\n\n🔎 User qidirish uchun: **User qidirish** tugmasi.",
+        parse_mode="Markdown", reply_markup=admin_menu_keyboard()
+    )
+
+@dp.message(F.text == "💰 BALANS")
+async def admin_balance_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    await message.answer("💰 **BALANS BOSHQARUVI**\n\nBalans qo'shish/ayirish uchun eski `💰 Balans +` va `💸 Balans -` funksiyalari ishlaydi.", parse_mode="Markdown", reply_markup=admin_menu_keyboard())
+
+@dp.message(F.text == "🛒 SAVDO")
+async def admin_sales_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    await admin_sales_history(message)
+
+@dp.message(F.text == "💳 TO'LOVLAR")
+async def admin_payments_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    await admin_payment_history(message)
+
+@dp.message(F.text == "📦 QOLDIQ")
+async def admin_stock_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    await show_stats_and_stock(message)
+
+@dp.message(F.text == "🎁 PROMO")
+async def admin_promo_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    await admin_promo_menu(message)
+
+@dp.message(F.text == "🎫 SUPPORT")
+async def admin_support_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    await admin_support_list(message)
+
+@dp.message(F.text == "📊 STATISTIKA")
+async def admin_stats_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    s = await db.get_admin_dashboard()
+    stocks = {c: await db.get_pm_count(c) for c in ['24','49','99','149','179','199']}
+    await message.answer(
+        f"📊 **BOT STATISTIKASI**\n\n"
+        f"👤 Userlar: {s['users']}\n🟢 Faol: {s['active']}\n\n"
+        f"💰 Bugungi daromad: {s['today_money']:,} so'm\n📅 Haftalik: {s['week_money']:,} so'm\n📆 Oylik: {s['month_money']:,} so'm\n\n"
+        f"🛒 Bugungi savdo: {s['today_sales']}\n\n"
+        f"📦 PM qoldiq:\n" + "\n".join([f"{c} PM — {n}" for c, n in stocks.items()]),
+        parse_mode="Markdown", reply_markup=admin_menu_keyboard()
+    )
+
+@dp.message(F.text == "📝 LOG")
+async def admin_log_panel(message: types.Message):
+    if message.from_user.id == ADMIN_ID: await admin_log(message)
+
+@dp.message(F.text == "🛡️ XAVFSIZlik")
+async def admin_security_panel(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    maint = await db.get_setting("maintenance_mode","0")
+    cashback = await db.get_setting("cashback_percent","0")
+    ref = await db.get_setting("referral_bonus","500")
+    await message.answer(
+        f"🛡️ **XAVFSIZLIK**\n\n"
+        f"🔐 Admin ID tekshiruvi: 🟢\n💳 Payment duplicate himoyasi: 🟢\n🗃 SQL parametrizatsiyasi: 🟢\n💾 SQLite saqlash: 🟢\n"
+        f"🛠 Maintenance: {'🟢 ON' if maint=='1' else '🔴 OFF'}\n💸 Cashback: {cashback}%\n🤝 Referral bonusi: {ref} so'm",
+        parse_mode="Markdown", reply_markup=admin_menu_keyboard()
+    )
+
+@dp.message(F.text == "📢 REKLAMA")
+async def admin_broadcast_menu(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📢 Barchaga")],[KeyboardButton(text="🟢 Faol userlar"), KeyboardButton(text="👥 Guruh ID bo'yicha")],[KeyboardButton(text="🔙 Orqaga")]], resize_keyboard=True)
+    await message.answer("📢 **REKLAMA**\n\nKimga yuborishni tanlang:", parse_mode="Markdown", reply_markup=kb)
+
+@dp.message(F.text.in_({"📢 Barchaga","🟢 Faol userlar","👥 Guruh ID bo'yicha"}))
+async def admin_broadcast_target(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    target = message.text
+    if target == "👥 Guruh ID bo'yicha":
+        await state.update_data(broadcast_target='group')
+        await message.answer("Guruh chat ID sini yuboring (masalan: -100...):", reply_markup=back_keyboard())
+        await state.set_state(AdminExtraState.waiting_for_broadcast_target)
+        return
+    mapping = {"📢 Barchaga": "all", "🟢 Faol userlar": "active"}
+    await state.update_data(broadcast_target=mapping[target])
+    await state.set_state(AdminExtraState.waiting_for_broadcast_message)
+    await message.answer("📨 Yuboriladigan xabarni yuboring:", reply_markup=back_keyboard())
+
+@dp.message(AdminExtraState.waiting_for_broadcast_target)
+async def admin_broadcast_group_id(message: types.Message, state: FSMContext):
+    if not message.text.lstrip('-').isdigit():
+        await message.answer("❌ Guruh ID noto'g'ri.")
+        return
+    await state.update_data(broadcast_group=message.text)
+    await state.set_state(AdminExtraState.waiting_for_broadcast_message)
+    await message.answer("📨 Endi reklama xabarini yuboring:", reply_markup=back_keyboard())
+
+@dp.message(AdminExtraState.waiting_for_broadcast_message)
+async def admin_broadcast_pro(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    data = await state.get_data()
+    target = data.get('broadcast_target','all')
+    if target == 'all': ids = await db.get_all_users()
+    elif target == 'active': ids = await db.get_active_users(7)
+    else: ids = await db.get_group_user_ids(data.get('broadcast_group'))
+    sent = failed = 0
+    for (uid,) in ids:
+        try:
+            await message.copy_to(uid)
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)
+    await db.log_admin_action(ADMIN_ID,'broadcast',details=f'{target}: sent={sent}, failed={failed}')
+    await message.answer(f"📢 **Reklama yakunlandi**\n\n✅ Yetib bordi: {sent}\n❌ Yetib bormadi: {failed}", parse_mode="Markdown", reply_markup=admin_menu_keyboard())
+    await state.clear()
+
+@dp.message(F.text == "⚙️ SOZLAMALAR")
+async def admin_settings_max(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    maint = await db.get_setting('maintenance_mode','0')
+    cashback = await db.get_setting('cashback_percent','0')
+    ref = await db.get_setting('referral_bonus','500')
+    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🛠 Maintenance ON/OFF")],[KeyboardButton(text="💸 Cashback %")],[KeyboardButton(text="🤝 Referral bonus")],[KeyboardButton(text="📝 Bot xabari")],[KeyboardButton(text="👨‍💻 Support nomi")],[KeyboardButton(text="🔗 Support username")],[KeyboardButton(text="🔙 Orqaga")]], resize_keyboard=True)
+    await message.answer(f"⚙️ **SOZLAMALAR**\n\n🛠 Maintenance: {'ON' if maint=='1' else 'OFF'}\n💸 Cashback: {cashback}%\n🤝 Referral bonus: {ref} so'm", parse_mode='Markdown', reply_markup=kb)
+
+@dp.message(F.text == "👨‍💻 Support nomi")
+async def support_name_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    await state.update_data(setting_key="support_name")
+    await state.set_state(AdminExtraState.waiting_for_setting_value)
+    await message.answer("Supportchi nomini kiriting:", reply_markup=back_keyboard())
+
+@dp.message(F.text == "🔗 Support username")
+async def support_username_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    await state.update_data(setting_key="support_username")
+    await state.set_state(AdminExtraState.waiting_for_setting_value)
+    await message.answer("Support username'ini kiriting (masalan: JAS_SMM):", reply_markup=back_keyboard())
+
+@dp.message(AdminExtraState.waiting_for_setting_value)
+async def save_setting_value(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    data = await state.get_data()
+    key = data.get("setting_key")
+    if key:
+        value = message.text.strip().lstrip('@')
+        await db.set_setting(key, value)
+        await db.log_admin_action(ADMIN_ID, "setting", details=f"{key}={value}")
+        await message.answer("✅ Sozlama saqlandi.", reply_markup=admin_menu_keyboard())
+        await state.clear()
+
+@dp.message(F.text == "🛠 Maintenance ON/OFF")
+async def toggle_maintenance(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    old = await db.get_setting('maintenance_mode','0')
+    new = '0' if old=='1' else '1'
+    await db.set_setting('maintenance_mode', new)
+    await db.log_admin_action(ADMIN_ID, 'maintenance', details=new)
+    await message.answer('🟢 Maintenance yoqildi.' if new=='1' else '🔴 Maintenance o‘chirildi.', reply_markup=admin_menu_keyboard())
+
+@dp.message(F.text == "💸 Cashback %")
+async def cashback_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    await state.set_state(AdminExtraState.waiting_for_cashback)
+    await message.answer("Cashback foizini kiriting (0-100):", reply_markup=back_keyboard())
+
+@dp.message(AdminExtraState.waiting_for_cashback)
+async def cashback_save(message: types.Message, state: FSMContext):
+    if not message.text.isdigit() or not 0<=int(message.text)<=100:
+        await message.answer('0-100 oralig‘ida raqam kiriting.')
+        return
+    await db.set_setting('cashback_percent', message.text)
+    await db.log_admin_action(ADMIN_ID, 'cashback', details=message.text)
+    await state.clear()
+    await message.answer('✅ Cashback saqlandi.', reply_markup=admin_menu_keyboard())
+
+@dp.message(F.text == "🤝 Referral bonus")
+async def referral_bonus_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    await state.set_state(AdminExtraState.waiting_for_referral_bonus)
+    await message.answer("Referral bonusini kiriting (so'm):", reply_markup=back_keyboard())
+
+@dp.message(AdminExtraState.waiting_for_referral_bonus)
+async def referral_bonus_save(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer('Faqat raqam.')
+        return
+    await db.set_setting('referral_bonus', message.text)
+    await db.log_admin_action(ADMIN_ID, 'referral_bonus', details=message.text)
+    await state.clear()
+    await message.answer('✅ Referral bonusi saqlandi.', reply_markup=admin_menu_keyboard())
 
 
 # --- USER: BALANS VA TO'LOV HANDLERLARI ---
@@ -594,7 +1000,6 @@ async def process_auto_amount(message: types.Message, state: FSMContext):
 
     if payment.get("success"):
         token = payment.get("token")
-        
         random_addition = random.randint(10, 30)
         pay_amount = amount + random_addition
 
@@ -634,7 +1039,6 @@ async def process_auto_amount(message: types.Message, state: FSMContext):
         err = payment.get("error", "Noma'lum xatolik")
         await msg.edit_text(f"⚠️ To'lov yaratishda xatolik yuz berdi: {err}")
 
-
 @dp.callback_query(F.data.startswith("checkpay_"))
 async def check_auto_pay(call: types.CallbackQuery):
     token = call.data.split("_")[1]
@@ -651,10 +1055,10 @@ async def check_auto_pay(call: types.CallbackQuery):
         user_id = call.from_user.id
         
         if amount:
-            await db.add_user_balance(user_id, int(amount))
-            await db.log_event(user_id, 'topup', int(amount))
-            if hasattr(db, "mark_payment_as_paid"):
-                await db.mark_payment_as_paid(token)
+            credited_user = await db.credit_payment_once(token, int(amount)) if hasattr(db, "credit_payment_once") else None
+            if not credited_user:
+                await call.answer("✅ Bu to'lov allaqachon hisobga olingan!", show_alert=True)
+                return
                 
             new_bal = await db.get_user_balance(user_id)
             
@@ -671,7 +1075,9 @@ async def check_auto_pay(call: types.CallbackQuery):
         status = res.get("status", "pending")
         if status in ["pending", "waiting"]:
             await call.answer("⏳ Pul hali kartaga yetib kelmadi. To'lovni amalga oshirgan bo'lsangiz 10-15 soniya kutib qayta bosing!", show_alert=True)
-        elif status in ["expired", "canceled"]:
+        elif status in ["expired", "canceled", "failed"]:
+            if hasattr(db,"set_payment_status"):
+                await db.set_payment_status(token, "failed")
             await call.message.edit_text("❌ To'lov muddati o'tgan yoki bekor qilingan.")
             await call.answer("To'lov muddati tugagan!", show_alert=True)
         else:
@@ -1114,49 +1520,58 @@ async def user_bonus_start(message: types.Message, state: FSMContext):
 @dp.message(UserExtraState.waiting_for_bonus_code)
 async def user_bonus_process(message: types.Message, state: FSMContext):
     code = message.text.strip()
-    amount, status = await db.redeem_promo_bonus(code, message.from_user.id)
+    amount, status = await db.redeem_promo_bonus_pro(code, message.from_user.id) if hasattr(db,"redeem_promo_bonus_pro") else await db.redeem_promo_bonus(code, message.from_user.id)
     if status == "not_found":
         await message.answer("❌ Bunday bonus kod topilmadi.")
     elif status == "inactive":
         await message.answer("❌ Bu bonus kod tugagan yoki o'chirilgan.")
     elif status == "already":
         await message.answer("⚠️ Siz bu koddan avval foydalangansiz.")
+    elif status == "expired":
+        await message.answer("❌ Bu promo kodning amal qilish muddati tugagan.")
+    elif status == "not_for_user":
+        await message.answer("❌ Bu promo kod siz uchun berilmagan.")
     else:
-        await db.add_user_balance(message.from_user.id, amount)
+        if not hasattr(db,"redeem_promo_bonus_pro"):
+            await db.add_user_balance(message.from_user.id, amount)
         await db.log_event(message.from_user.id, "promo_bonus", amount, details=code)
         bal = await db.get_user_balance(message.from_user.id)
         await message.answer(f"🎉 Bonus qabul qilindi!\n💰 +{amount:,} so'm\n💳 Balans: {bal:,} so'm", reply_markup=main_menu(message.from_user.id))
     await state.clear()
 
-@dp.message(F.text == "👑 VIP")
-async def user_vip_info(message: types.Message):
-    expires = await db.is_vip(message.from_user.id)
-    if expires:
-        await message.answer(f"👑 **VIP holati: FAOL**\n⏳ Tugash vaqti: `{expires}`", parse_mode="Markdown")
-    else:
-        await message.answer("👑 Sizda hozir VIP faol emas.")
-
 @dp.message(F.text == "🎫 Support", F.from_user.id != ADMIN_ID)
 async def user_support_start(message: types.Message, state: FSMContext):
+    await state.clear()
+    support_name = await db.get_setting("support_name", "JAS SMM")
+    support_username = await db.get_setting("support_username", "JAS_SMM")
+    support_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"👨‍💻 {support_name} @{support_username}", url=f"https://t.me/{support_username.lstrip('@')}")],
+        [InlineKeyboardButton(text="🎫 Ticket ochish", callback_data="open_support_ticket")]
+    ])
+    await message.answer(
+        "🎫 **Support**\n\nSavol yoki muammo bo'lsa, to'g'ridan-to'g'ri supportga yozing:",
+        reply_markup=support_kb, parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data == "open_support_ticket")
+async def open_support_ticket(call: types.CallbackQuery, state: FSMContext):
     await state.set_state(UserExtraState.waiting_for_support_message)
-    await message.answer("🎫 Muammo yoki savolingizni yozing. Admin ko'rib chiqadi:", reply_markup=back_keyboard())
+    await call.message.answer("🎫 Muammo yoki savolingizni yozing. Ticket ochiladi:", reply_markup=back_keyboard())
+    await call.answer()
 
 @dp.message(UserExtraState.waiting_for_support_message)
 async def user_support_process(message: types.Message, state: FSMContext):
-    tid = await db.create_support_ticket(message.from_user.id, message.text.strip())
-    await bot.send_message(
-        ADMIN_ID,
-        f"🎫 **Yangi support #{tid}**\n\n"
-        f"👤 User: `{message.from_user.id}`\n"
-        f"📝 {message.text}",
-        parse_mode="Markdown"
-    )
-    await message.answer(f"✅ Murojaatingiz #{tid} qabul qilindi.", reply_markup=main_menu(message.from_user.id))
+    tid = await db.create_support_ticket(message.from_user.id, message.text or "")
+    await db.log_event(message.from_user.id, "support_ticket", 0, details=f"ticket={tid}")
     await state.clear()
+    try:
+        await bot.send_message(ADMIN_ID, f"🎫 **Yangi ticket #{tid}**\n👤 User: `{message.from_user.id}`\n\n{message.text}", parse_mode="Markdown")
+    except Exception: pass
+    await message.answer(f"✅ Ticket **#{tid}** qabul qilindi.\n\nYoki tezkor aloqa uchun @JAS_SMM ga yozishingiz mumkin.", parse_mode="Markdown", reply_markup=main_menu(message.from_user.id))
 
 
 # ============================================================
-# ADMIN: QIDIRUV / PROMO / VIP / TARIX / DAROMAD / SUPPORT / LOG
+# ADMIN: QIDIRUV / PROMO / TARIX / DAROMAD / SUPPORT / LOG
 # ============================================================
 
 @dp.message(F.text == "🔎 User qidirish")
@@ -1173,13 +1588,9 @@ async def admin_search_user_get(message: types.Message, state: FSMContext):
     uid = int(message.text)
     bal = await db.get_user_balance(uid)
     banned = await db.is_user_banned(uid)
-    vip = await db.is_vip(uid)
     events = await db.get_user_events(uid, 10)
-    
-    vip_text = f"✅ {vip}" if vip else "❌ Yo'q"
-    text = f"👤 **USER**\n🆔 `{uid}`\n💰 Balans: **{bal:,} so'm**\n📌 Holat: {'🚫 Ban' if banned else '✅ Faol'}\n👑 VIP: {vip_text}\n\n📜 Oxirgi amallar:\n"
+    text = f"👤 **USER**\n🆔 `{uid}`\n💰 Balans: **{bal:,} so'm**\n📌 Holat: {'🚫 Ban' if banned else '✅ Faol'}\n\n📜 Oxirgi amallar:\n"
     text += "\n".join([f"• {e[4]} — {e[0]} — {e[1]:,} so'm" for e in events]) or "• Tarix yo'q"
-    
     await message.answer(text, parse_mode="Markdown", reply_markup=admin_menu_keyboard())
     await state.clear()
 
@@ -1216,11 +1627,30 @@ async def admin_promo_amount(message: types.Message, state: FSMContext):
 
 @dp.message(AdminExtraState.waiting_for_promo_uses)
 async def admin_promo_uses(message: types.Message, state: FSMContext):
-    if not message.text.isdigit() or int(message.text) < 1:
+    if not message.text.isdigit() or int(message.text)<1:
         await message.answer("1 yoki undan katta son kiriting."); return
+    await state.update_data(promo_uses=int(message.text))
+    await state.set_state(AdminExtraState.waiting_for_promo_expiry)
+    await message.answer("⏳ Amal qilish muddati necha kun? `0` = muddatsiz", parse_mode="Markdown")
+
+@dp.message(AdminExtraState.waiting_for_promo_expiry)
+async def admin_promo_expiry(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): await message.answer("Faqat raqam."); return
+    days = int(message.text)
+    expires = None
+    if days > 0:
+        expires = (datetime.datetime.utcnow() + datetime.timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+    await state.update_data(promo_expires=expires)
+    await state.set_state(AdminExtraState.waiting_for_promo_target)
+    await message.answer("👤 Ma'lum user uchunmi? User ID yuboring yoki `0` deb yozing.", parse_mode="Markdown")
+
+@dp.message(AdminExtraState.waiting_for_promo_target)
+async def admin_promo_target(message: types.Message, state: FSMContext):
+    if not message.text.isdigit(): await message.answer("User ID raqam bo'lishi kerak. `0` = barchaga.", parse_mode="Markdown"); return
+    target = int(message.text) or None
     d = await state.get_data()
-    await db.create_promo_bonus(d["promo_code"], d["promo_amount"], int(message.text))
-    await db.log_admin_action(ADMIN_ID, "promo_create", details=d["promo_code"])
+    await db.create_promo_bonus_pro(d["promo_code"], d["promo_amount"], d["promo_uses"], d.get("promo_expires"), target)
+    await db.log_admin_action(ADMIN_ID, "promo_create", details=f"{d['promo_code']} target={target or 'all'}")
     await message.answer("✅ Promo yaratildi.", reply_markup=admin_menu_keyboard())
     await state.clear()
 
@@ -1236,60 +1666,6 @@ async def admin_promo_delete_process(message: types.Message, state: FSMContext):
     await db.delete_promo_bonus(code)
     await db.log_admin_action(ADMIN_ID, "promo_delete", details=code)
     await message.answer("✅ Promo o'chirildi.", reply_markup=admin_menu_keyboard())
-    await state.clear()
-
-@dp.message(F.text == "👑 VIP boshqaruvi")
-async def admin_vip_menu(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
-    vips = await db.get_vip_users()
-    text = "👑 **VIP FOYDALANUVCHILAR**\n\n" + ("\n".join([f"• `{v[0]}` — {v[1]}" for v in vips]) or "VIP foydalanuvchilar yo'q.")
-    kb = ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="➕ VIP berish"), KeyboardButton(text="❌ VIP olish")],
-        [KeyboardButton(text="⬅️ Admin menyu")]
-    ], resize_keyboard=True)
-    await message.answer(text, parse_mode="Markdown", reply_markup=kb)
-
-@dp.message(F.text == "➕ VIP berish")
-async def admin_vip_add_start(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
-    await state.set_state(AdminExtraState.waiting_for_vip_id)
-    await message.answer("VIP beriladigan User ID:", reply_markup=back_keyboard())
-
-@dp.message(AdminExtraState.waiting_for_vip_id)
-async def admin_vip_id(message: types.Message, state: FSMContext):
-    if not message.text.isdigit(): await message.answer("Faqat ID raqam."); return
-    await state.update_data(vip_id=int(message.text))
-    await state.set_state(AdminExtraState.waiting_for_vip_days)
-    await message.answer("Necha kun VIP?")
-
-@dp.message(AdminExtraState.waiting_for_vip_days)
-async def admin_vip_days(message: types.Message, state: FSMContext):
-    if not message.text.isdigit() or int(message.text) < 1: await message.answer("Kun sonini kiriting."); return
-    d = await state.get_data()
-    uid = d["vip_id"]
-    days = int(message.text)
-    await db.set_vip(uid, days)
-    await db.log_admin_action(ADMIN_ID, "vip_add", uid, details=f"{days} days")
-    try: await bot.send_message(uid, f"👑 Sizga **{days} kun VIP** berildi!", parse_mode="Markdown")
-    except: pass
-    await message.answer("✅ VIP berildi.", reply_markup=admin_menu_keyboard())
-    await state.clear()
-
-@dp.message(F.text == "❌ VIP olish")
-async def admin_vip_remove_start(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
-    await state.set_state(AdminExtraState.waiting_for_vip_remove)
-    await message.answer("VIP olinadigan User ID ni yuboring:", reply_markup=back_keyboard())
-
-@dp.message(AdminExtraState.waiting_for_vip_remove)
-async def admin_vip_remove_process(message: types.Message, state: FSMContext):
-    if not message.text.isdigit(): await message.answer("Faqat ID raqam."); return
-    uid = int(message.text)
-    await db.remove_vip(uid)
-    await db.log_admin_action(ADMIN_ID, "vip_remove", uid)
-    try: await bot.send_message(uid, "ℹ️ VIP holatingiz admin tomonidan bekor qilindi.")
-    except: pass
-    await message.answer("✅ VIP olib tashlandi.", reply_markup=admin_menu_keyboard())
     await state.clear()
 
 @dp.message(F.text == "🛒 Savdo tarixi")
@@ -1316,14 +1692,15 @@ async def admin_revenue(message: types.Message):
     s = await db.get_event_stats()
     await message.answer(
         f"📈 **DAROMAD / STATISTIKA**\n\n"
-        f"🟢 Bugungi xaridlar: {s['purchases_today']} ta\n\n"
-        f"💰 Bugungi savdo: {s['sales_today']:,} so'm\n\n"
-        f"📅 7 kunlik xaridlar: {s['purchases_week']} ta\n\n"
-        f"🗓 30 kunlik savdo: {s['sales_month']:,} so'm\n\n"
-        f"⚡ Bugungi eventlar: {s['events_today']} ta"
-        , parse_mode="Markdown")
+        f"🟢 Bugungi xaridlar: {s['purchases_today']} ta\n"
+        f"💰 Bugungi savdo: {s['sales_today']:,} so'm\n"
+        f"📅 7 kunlik xaridlar: {s['purchases_week']} ta\n"
+        f"🗓 30 kunlik savdo: {s['sales_month']:,} so'm\n"
+        f"⚡ Bugungi eventlar: {s['events_today']} ta",
+        parse_mode="Markdown"
+    )
 
-@dp.message(F.text == "🎫 Support")
+@dp.message(F.text == " ADMIN")
 async def admin_support_list(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     rows = await db.get_open_tickets()
@@ -1332,13 +1709,9 @@ async def admin_support_list(message: types.Message):
     if rows:
         await message.answer("Javob berish: `/reply TICKET_ID matn`", parse_mode="Markdown")
 
-@dp.message(F.text.startswith("/reply"))
+@dp.message(F.text.regexp(r"^/reply\s+\d+\s+"))
 async def admin_ticket_reply_command(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
     parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer("❌ Xato format! Masalan: `/reply 1 Salom`", parse_mode="Markdown")
-        return
     tid = int(parts[1])
     reply = parts[2]
     uid = await db.reply_support_ticket(tid, reply)
@@ -1360,11 +1733,105 @@ async def admin_log(message: types.Message):
     text = "📝 **ADMIN LOG**\n\n" + ("\n".join([f"• {r[4]} — {r[0]} — {r[1] or '-'} — {r[2]:,}" for r in rows]) or "Log yo'q.")
     await message.answer(text, parse_mode="Markdown")
 
+@dp.message(F.text == "📢 Majburiy obuna")
+async def admin_required_subscription(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    enabled = await db.is_required_subscription_enabled()
+    channels = await db.get_required_channels()
+    text = "📢 **MAJBURIY OBUNA**\n\n"
+    text += "Holat: " + ("🟢 Yoqilgan" if enabled else "🔴 O'chirilgan") + "\n\n"
+    if channels:
+        text += "Kanallar:\n" + "\n".join([f"• #{r[0]} — {r[3] or r[1]}" for r in channels])
+    else:
+        text += "Hozircha kanal qo'shilmagan."
+    kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="➕ Kanal qo'shish"), KeyboardButton(text="🗑️ Kanal o'chirish")],
+        [KeyboardButton(text="🟢 Obunani yoqish"), KeyboardButton(text="🔴 Obunani o'chirish")],
+        [KeyboardButton(text="⬅️ Admin menyu")]
+    ], resize_keyboard=True)
+    await message.answer(text, parse_mode="Markdown", reply_markup=kb)
+
+@dp.message(F.text == "➕ Kanal qo'shish")
+async def admin_required_add_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(AdminExtraState.waiting_for_required_channel)
+    await message.answer(
+        "➕ Kanal qo'shish\n\n"
+        "Public kanal uchun: `@kanalusername|Kanal nomi`\n"
+        "Private kanal uchun: `-1001234567890|https://t.me/+invite|Kanal nomi`\n\n"
+        "⚠️ Bot kanalga admin bo'lishi kerak.",
+        parse_mode="Markdown", reply_markup=back_keyboard()
+    )
+
+@dp.message(AdminExtraState.waiting_for_required_channel)
+async def admin_required_add_process(message: types.Message, state: FSMContext):
+    raw = message.text.strip()
+    parts = [x.strip() for x in raw.split("|")]
+    if len(parts) == 2:
+        chat_id, title = parts
+        invite = None
+    elif len(parts) == 3:
+        chat_id, invite, title = parts
+    else:
+        await message.answer("❌ Format noto'g'ri. Misol: `@kanal|Kanal nomi`", parse_mode="Markdown")
+        return
+    if not (chat_id.startswith("@") or chat_id.lstrip("-").isdigit()):
+        await message.answer("❌ Kanal username `@...` yoki Telegram chat ID bo'lishi kerak.")
+        return
+    try:
+        chat = await bot.get_chat(chat_id)
+        await db.add_required_channel(chat_id, invite, title or chat.title)
+        await db.log_admin_action(ADMIN_ID, "required_channel_add", details=str(chat_id))
+        await message.answer(f"✅ Kanal qo'shildi: {chat.title or title}", reply_markup=admin_menu_keyboard())
+        await state.clear()
+    except Exception as e:
+        logging.error("Kanal qo'shishda xato: %s", e)
+        await message.answer("❌ Kanal topilmadi. Chat ID/username va botning kanalga admin ekanini tekshiring.")
+
+@dp.message(F.text == "🗑️ Kanal o'chirish")
+async def admin_required_remove_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    channels = await db.get_required_channels()
+    if not channels:
+        await message.answer("Kanal yo'q.")
+        return
+    await state.set_state(AdminExtraState.waiting_for_required_remove)
+    text = "🗑️ O'chirish uchun kanal ID sini yuboring:\n\n" + "\n".join([f"#{r[0]} — {r[3] or r[1]}" for r in channels])
+    await message.answer(text, reply_markup=back_keyboard())
+
+@dp.message(AdminExtraState.waiting_for_required_remove)
+async def admin_required_remove_process(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Kanal ID sini raqam bilan yuboring.")
+        return
+    cid = int(message.text)
+    await db.remove_required_channel(cid)
+    await db.log_admin_action(ADMIN_ID, "required_channel_remove", details=str(cid))
+    await message.answer("✅ Kanal o'chirildi.", reply_markup=admin_menu_keyboard())
+    await state.clear()
+
+@dp.message(F.text == "🟢 Obunani yoqish")
+async def admin_required_enable(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    await db.toggle_required_channel(True)
+    await db.log_admin_action(ADMIN_ID, "required_subscription_on")
+    await message.answer("🟢 Majburiy obuna yoqildi.", reply_markup=admin_menu_keyboard())
+
+@dp.message(F.text == "🔴 Obunani o'chirish")
+async def admin_required_disable(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    await db.toggle_required_channel(False)
+    await db.log_admin_action(ADMIN_ID, "required_subscription_off")
+    await message.answer("🔴 Majburiy obuna o'chirildi.", reply_markup=admin_menu_keyboard())
+
 @dp.message(F.text == "⚙️ Sozlamalar")
 async def admin_settings(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     await message.answer("⚙️ **Sozlamalar**\n\nHozircha asosiy sozlama: bot nomi/xabari.\nYangi qiymatni o'zgartirish uchun `bot_notice` kalitidan foydalaniladi.", parse_mode="Markdown")
-    await db.set_setting("last_settings_open", "1")
+    await db.set_setting("last_settings_open","1")
 
 @dp.message(F.text == "⬅️ Admin menyu")
 async def back_admin_menu(message: types.Message, state: FSMContext):
@@ -1372,22 +1839,21 @@ async def back_admin_menu(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer("⚙️ Admin panel", reply_markup=admin_menu_keyboard())
 
-# --- BOTni va WEBHOOK SERVERNI BIRGA ISHGA TUSHIRISH ---
+
 async def main():
-    await db.init_db()
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     
+    # Webhook serverni sozlash (Aiohttp)
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, payhamyon_webhook_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, WEB_SERVER_HOST, WEB_SERVER_PORT)
     await site.start()
-    
-    logging.info(f"Webhook server running on http://{WEB_SERVER_HOST}:{WEB_SERVER_PORT}{WEBHOOK_PATH}")
+    logging.info(f"Web server ishga tushdi: http://{WEB_SERVER_HOST}:{WEB_SERVER_PORT}{WEBHOOK_PATH}")
 
+    # Botni ishga tushirish
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
