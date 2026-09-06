@@ -92,6 +92,21 @@ async def async_check_payment(token: str):
     }
     return await asyncio.to_thread(send_payhamyon_request, f"{BASE_URL}/api/payment/check", payload)
 
+async def async_get_shop_info():
+    payload = {
+        "shop_id": int(SHOP_ID),
+        "shop_key": str(SHOP_KEY).strip(),
+    }
+    return await asyncio.to_thread(send_payhamyon_request, f"{BASE_URL}/api/shop/info", payload)
+
+async def async_cancel_payment(token: str):
+    payload = {
+        "shop_id": int(SHOP_ID),
+        "shop_key": str(SHOP_KEY).strip(),
+        "token": str(token).strip(),
+    }
+    return await asyncio.to_thread(send_payhamyon_request, f"{BASE_URL}/api/payment/cancel", payload)
+
 
 # --- PAYHAMYON WEBHOOK HANDLER ---
 async def payhamyon_webhook_handler(request: web.Request):
@@ -1212,8 +1227,14 @@ async def process_auto_amount(message: types.Message, state: FSMContext):
 
     if payment.get("success"):
         token = payment.get("token")
-        random_addition = random.randint(10, 30)
-        pay_amount = amount + random_addition
+        # PayHamyon namunasidagi pay_amount bo'lsa, aynan shuni ishlatamiz.
+        # API qaytarmasa, 1-30 so'mlik tasodifiy qo'shimcha qo'llanadi.
+        api_pay_amount = payment.get("pay_amount")
+        if api_pay_amount is not None:
+            pay_amount = int(api_pay_amount)
+        else:
+            random_addition = random.randint(1, 30)
+            pay_amount = amount + random_addition
 
         if hasattr(db, "save_payment_token"):
             await db.save_payment_token(token, message.from_user.id, amount)
@@ -1241,7 +1262,8 @@ async def process_auto_amount(message: types.Message, state: FSMContext):
             f"📋 **To'lov ma'lumotlari:**\n\n"
             f"💵 **To'lanishi kerak:** {pay_amount:,} so'm\n"
             f"💳 **Karta raqami:** `{card}`\n"
-            f"👤 **Ega:** A.U\n\n"
+            f"👤 **Ega:** A.U\n"
+            f"🧾 **Token:** `{token}`\n\n"
             f"⚠️ **Muhim:** To'lovni aynan {pay_amount:,} so'm qilib o'tkazing.\n"
             f"⏳ **To'lov muddati:** 5 daqiqa\n"
             f"Tizim sizni summa orqali taniydi."
@@ -1298,8 +1320,16 @@ async def check_auto_pay(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("cancelpay_"))
 async def cancel_auto_pay(call: types.CallbackQuery):
-    await call.message.edit_text("❌ To'lov bekor qilindi.")
-    await call.answer("Bekor qilindi")
+    token = call.data.split("_", 1)[1]
+    try:
+        res = await async_cancel_payment(token)
+        if res.get("success") or res.get("status") in ["canceled", "cancelled", "success"]:
+            await call.message.edit_text("❌ To'lov bekor qilindi.")
+            await call.answer("Bekor qilindi")
+        else:
+            await call.answer("❌ To'lovni bekor qilishda xatolik.", show_alert=True)
+    except Exception:
+        await call.answer("❌ To'lovni bekor qilishda xatolik.", show_alert=True)
 
 
 @dp.callback_query(F.data == "pay_admin")
