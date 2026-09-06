@@ -439,7 +439,7 @@ async def cmd_admin(message: types.Message, state: FSMContext):
 # --- USER: PUBG UC OLISH (faqat UC menyusi; mavjud asosiy menyular o'zgartirilmagan) ---
 async def pubg_uc_menu_keyboard():
     prices = await db.get_uc_prices()
-    packages = ["60", "325", "660", "1800", "3850"]
+    packages = ["60", "120", "240", "325", "660", "1800", "3850"]
     rows = []
     for package in packages:
         price = prices.get(package, 0)
@@ -485,7 +485,7 @@ async def show_pubg_uc_packages(call: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("buy_uc_"))
 async def process_pubg_uc_buy(call: types.CallbackQuery):
     package = call.data[len("buy_uc_"):]
-    packages = {"60", "325", "660", "1800", "3850"}
+    packages = {"60", "120", "240", "325", "660", "1800", "3850"}
     if package not in packages:
         await call.answer("❌ Noto'g'ri UC paket.", show_alert=True)
         return
@@ -526,7 +526,7 @@ async def admin_uc_menu(message: types.Message, state: FSMContext):
         return
     await state.clear()
     prices = await db.get_uc_prices()
-    packages = ["60", "325", "660", "1800", "3850"]
+    packages = ["60", "120", "240", "325", "660", "1800", "3850"]
     lines = []
     for p in packages:
         stock = await db.get_uc_count(p)
@@ -545,7 +545,7 @@ async def admin_uc_stock(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     prices = await db.get_uc_prices()
-    packages = ["60", "325", "660", "1800", "3850"]
+    packages = ["60", "120", "240", "325", "660", "1800", "3850"]
     lines = []
     for p in packages:
         stock = await db.get_uc_count(p)
@@ -558,7 +558,8 @@ async def admin_uc_price_start(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     kb = ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text=f"💵 {p} UC") for p in ["60", "325"]],
+        [KeyboardButton(text=f"💵 {p} UC") for p in ["60", "120"]],
+        [KeyboardButton(text=f"💵 {p} UC") for p in ["240", "325"]],
         [KeyboardButton(text=f"💵 {p} UC") for p in ["660", "1800"]],
         [KeyboardButton(text="💵 3850 UC")],
         [KeyboardButton(text="🔙 Orqaga")]
@@ -569,7 +570,7 @@ async def admin_uc_price_start(message: types.Message, state: FSMContext):
 @dp.message(AdminUCState.waiting_price_package)
 async def admin_uc_price_package(message: types.Message, state: FSMContext):
     package = message.text.replace("💎 ", "").replace(" UC", "").strip()
-    if package not in {"60", "325", "660", "1800", "3850"}:
+    if package not in {"60", "120", "240", "325", "660", "1800", "3850"}:
         await message.answer("Iltimos, UC paket tugmasini tanlang.")
         return
     await state.update_data(uc_package=package)
@@ -596,7 +597,8 @@ async def admin_uc_code_start(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     kb = ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text=f"💎 {p} UC") for p in ["60", "325"]],
+        [KeyboardButton(text=f"💎 {p} UC") for p in ["60", "120"]],
+        [KeyboardButton(text=f"💎 {p} UC") for p in ["240", "325"]],
         [KeyboardButton(text=f"💎 {p} UC") for p in ["660", "1800"]],
         [KeyboardButton(text="💎 3850 UC")],
         [KeyboardButton(text="🔙 Orqaga")]
@@ -607,7 +609,7 @@ async def admin_uc_code_start(message: types.Message, state: FSMContext):
 @dp.message(AdminUCState.waiting_code_package)
 async def admin_uc_code_package(message: types.Message, state: FSMContext):
     package = message.text.replace("💎 ", "").replace(" UC", "").strip()
-    if package not in {"60", "325", "660", "1800", "3850"}:
+    if package not in {"60", "120", "240", "325", "660", "1800", "3850"}:
         await message.answer("Iltimos, UC paket tugmasini tanlang.")
         return
     await state.update_data(uc_package=package)
