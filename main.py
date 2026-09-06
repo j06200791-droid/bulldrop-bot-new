@@ -1,4 +1,3 @@
-
 import asyncio
 import logging
 import random
@@ -158,6 +157,17 @@ class AdminEditPriceState(StatesGroup):
     waiting_for_new_price = State()
 
 
+class PUBGUCState(StatesGroup):
+    viewing = State()
+
+
+class AdminUCState(StatesGroup):
+    waiting_price_package = State()
+    waiting_new_price = State()
+    waiting_code_package = State()
+    waiting_codes = State()
+
+
 class AdminEditUserSellPriceState(StatesGroup):
     waiting_for_category = State()
     waiting_for_new_price = State()
@@ -178,7 +188,7 @@ class AdminUserOpState(StatesGroup):
 # --- KEYBOARDS ---
 def main_menu(user_id: int):
     buttons = [
-        [KeyboardButton(text="🎁 Promokod sotib olish"),],
+        [KeyboardButton(text="🎁 Promokod sotib olish"), KeyboardButton(text="🎮 PUBG UC XARID")],
         [KeyboardButton(text="👤 Profil"), KeyboardButton(text="💳 Balans to'ldirish")],
         [KeyboardButton(text="🎟️ Bonus kod"), KeyboardButton(text="🛒 Xaridlarim")],
         [KeyboardButton(text="💳 To'lovlarim"), KeyboardButton(text="🤝 Referral")],
@@ -210,6 +220,7 @@ def admin_menu_keyboard():
             [KeyboardButton(text="📢 Majburiy obuna"), KeyboardButton(text="➕ PM qo'shish")],
             [KeyboardButton(text="✏️ PM narxini o'zgartirish"), KeyboardButton(text="🏷️ Foydalanuvchi sotish narxi")],
             [KeyboardButton(text="📈 Daromad"), KeyboardButton(text="🔎 User qidirish")],
+            [KeyboardButton(text="🎮 PUBG UC boshqaruvi")],
             [KeyboardButton(text="💰 Balans +"), KeyboardButton(text="💸 Balans -")],
             [KeyboardButton(text="🚫 Ban"), KeyboardButton(text="✅ Unban")],
             [KeyboardButton(text="👤 User ma'lumot"), KeyboardButton(text="⬅️ Bosh menyu")]
@@ -405,6 +416,202 @@ async def cmd_admin(message: types.Message, state: FSMContext):
         return
     await state.clear()
     await message.answer("Admin panelga xush kelibsiz! Kerakli bo'limni tanlang:", reply_markup=admin_menu_keyboard())
+
+
+
+
+# --- USER: PUBG UC OLISH (faqat UC menyusi; mavjud asosiy menyular o'zgartirilmagan) ---
+async def pubg_uc_menu_keyboard():
+    prices = await db.get_uc_prices()
+    packages = ["60", "325", "660", "1800", "3850"]
+    rows = []
+    for package in packages:
+        price = prices.get(package, 0)
+        stock = await db.get_uc_count(package)
+        rows.append([InlineKeyboardButton(
+            text=f"💵 {package} UC | {price:,} so'm | {stock} ta",
+            callback_data=f"buy_uc_{package}"
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.message(F.text == "🎮 PUBG UC XARID")
+async def show_pubg_uc_menu(message: types.Message):
+    rules_text = (
+        "❗ **Muhim xarid qoidasi!**\n\n"
+        "📹 Xarid qilishdan oldin uzluksiz ekran yozuvini (Screen Record) yoqing.\n\n"
+        "🎟️ Redeem kodni nusxalab, Midasbuy saytiga joylang va aktivatsiyani videoda kesmasdan bajaring.\n\n"
+        "⚠️ Video bo'lmasa \"ishlamadi\" yoki \"ishlatilgan\" degan murojaatlar bo'yicha pul qaytarilmaydi.\n\n"
+        "👇 Qoidaga rozilik bildirsangiz, quyidagi tugmani bosing:"
+    )
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ ROZIMAN", callback_data="agree_uc_rules")]
+    ])
+    await message.answer(rules_text, reply_markup=confirm_kb, parse_mode="Markdown")
+
+
+@dp.callback_query(F.data == "agree_uc_rules")
+async def show_pubg_uc_packages(call: types.CallbackQuery):
+    kb = await pubg_uc_menu_keyboard()
+    await call.message.edit_text(
+        "💵**UC XARID**\n\nXarid qilmoqchi bo'lgan UC paketingizni tanlang:",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("buy_uc_"))
+async def process_pubg_uc_buy(call: types.CallbackQuery):
+    package = call.data[len("buy_uc_"):]
+    packages = {"60", "325", "660", "1800", "3850"}
+    if package not in packages:
+        await call.answer("❌ Noto'g'ri UC paket.", show_alert=True)
+        return
+
+    prices = await db.get_uc_prices()
+    price = int(prices.get(package, 0))
+    if price <= 0:
+        await call.answer("❌ UC narxi topilmadi.", show_alert=True)
+        return
+
+    user_id = call.from_user.id
+    balance = await db.get_user_balance(user_id)
+    if balance < price:
+        await call.answer(f"❌ Balansingiz yetarli emas. Kerak: {price:,} so'm", show_alert=True)
+        return
+
+    code = await db.purchase_uc_atomic(user_id, package, price)
+    if not code:
+        await call.answer("❌ Bu UC paketida kod qolmagan yoki balans yetarli emas.", show_alert=True)
+        return
+
+    new_balance = await db.get_user_balance(user_id)
+    await call.message.answer(
+        f"✅ **UC xarid qilindi!**\n\n"
+        f"💵 Paket: **{package} UC**\n"
+        f"💰 Narx: **{price:,} so'm**\n\n"
+        f"🎟️ Redeem code:\n`{code}`\n\n"
+        f"💳 Qolgan balans: **{new_balance:,} so'm**",
+        parse_mode="Markdown"
+    )
+    await call.answer("✅ UC xarid qilindi!")
+
+
+# --- ADMIN: PUBG UC BOSHQARUVI ---
+@dp.message(F.text == "🎮 PUBG UC boshqaruvi")
+async def admin_uc_menu(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    prices = await db.get_uc_prices()
+    packages = ["60", "325", "660", "1800", "3850"]
+    lines = []
+    for p in packages:
+        stock = await db.get_uc_count(p)
+        lines.append(f"💎 {p} UC — {prices.get(p, 0):,} so'm — {stock} ta")
+    text = "🎮 **PUBG UC BOSHQARUVI**\n\n" + "\n".join(lines)
+    kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="✏️ UC narxini o'zgartirish")],
+        [KeyboardButton(text="➕ UC Redeem Code qo'shish")],
+        [KeyboardButton(text="📦 UC qoldiq")],
+        [KeyboardButton(text="🔙 Orqaga")]
+    ], resize_keyboard=True)
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+@dp.message(F.text == "📦 UC qoldiq")
+async def admin_uc_stock(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    prices = await db.get_uc_prices()
+    packages = ["60", "325", "660", "1800", "3850"]
+    lines = []
+    for p in packages:
+        stock = await db.get_uc_count(p)
+        lines.append(f"💵 {p} UC — {prices.get(p, 0):,} so'm — {stock} ta")
+    text = "📦 **UC QOLDIQ**\n\n" + "\n".join(lines)
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message(F.text == "✏️ UC narxini o'zgartirish")
+async def admin_uc_price_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text=f"💵 {p} UC") for p in ["60", "325"]],
+        [KeyboardButton(text=f"💵 {p} UC") for p in ["660", "1800"]],
+        [KeyboardButton(text="💵 3850 UC")],
+        [KeyboardButton(text="🔙 Orqaga")]
+    ], resize_keyboard=True)
+    await state.set_state(AdminUCState.waiting_price_package)
+    await message.answer("Qaysi UC paketining narxini o'zgartirasiz?", reply_markup=kb)
+
+@dp.message(AdminUCState.waiting_price_package)
+async def admin_uc_price_package(message: types.Message, state: FSMContext):
+    package = message.text.replace("💎 ", "").replace(" UC", "").strip()
+    if package not in {"60", "325", "660", "1800", "3850"}:
+        await message.answer("Iltimos, UC paket tugmasini tanlang.")
+        return
+    await state.update_data(uc_package=package)
+    await state.set_state(AdminUCState.waiting_new_price)
+    await message.answer(f"💰 {package} UC uchun yangi narxni faqat raqamda kiriting:", reply_markup=back_keyboard())
+
+@dp.message(AdminUCState.waiting_new_price)
+async def admin_uc_new_price(message: types.Message, state: FSMContext):
+    if not (message.text or "").strip().isdigit():
+        await message.answer("❌ Faqat raqam kiriting.")
+        return
+    data = await state.get_data()
+    package = data["uc_package"]
+    price = int(message.text.strip())
+    if price <= 0:
+        await message.answer("❌ Narx 0 dan katta bo'lishi kerak.")
+        return
+    await db.update_uc_price(package, price)
+    await state.clear()
+    await message.answer(f"✅ {package} UC narxi {price:,} so'm qilib o'zgartirildi.", reply_markup=admin_menu_keyboard())
+
+@dp.message(F.text == "➕ UC Redeem Code qo'shish")
+async def admin_uc_code_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text=f"💎 {p} UC") for p in ["60", "325"]],
+        [KeyboardButton(text=f"💎 {p} UC") for p in ["660", "1800"]],
+        [KeyboardButton(text="💎 3850 UC")],
+        [KeyboardButton(text="🔙 Orqaga")]
+    ], resize_keyboard=True)
+    await state.set_state(AdminUCState.waiting_code_package)
+    await message.answer("Qaysi UC paketiga redeem code qo'shasiz?", reply_markup=kb)
+
+@dp.message(AdminUCState.waiting_code_package)
+async def admin_uc_code_package(message: types.Message, state: FSMContext):
+    package = message.text.replace("💎 ", "").replace(" UC", "").strip()
+    if package not in {"60", "325", "660", "1800", "3850"}:
+        await message.answer("Iltimos, UC paket tugmasini tanlang.")
+        return
+    await state.update_data(uc_package=package)
+    await state.set_state(AdminUCState.waiting_codes)
+    await message.answer(f"📥 {package} UC redeem code'larini yuboring. Har bir code yangi qatorda:", reply_markup=back_keyboard())
+
+@dp.message(AdminUCState.waiting_codes)
+async def admin_uc_save_codes(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    data = await state.get_data()
+    package = data["uc_package"]
+    codes = [x.strip() for x in (message.text or "").splitlines() if x.strip()]
+    if not codes:
+        await message.answer("❌ Code topilmadi. Har bir code'ni yangi qatorda yuboring.")
+        return
+    added = 0
+    duplicate = 0
+    for code in codes:
+        if await db.add_uc_redeem_code(package, code):
+            added += 1
+        else:
+            duplicate += 1
+    await state.clear()
+    await message.answer(f"✅ {added} ta code qo'shildi.\n⚠️ {duplicate} ta code takrorlangan yoki noto'g'ri.", reply_markup=admin_menu_keyboard())
 
 
 # --- USER: PROMOKOD SOTIB OLISH ---
@@ -708,7 +915,6 @@ async def user_profile(message: types.Message):
         f"🆔 ID: <code>{uid}</code>\n"
         f"👤 Username: @{username}\n"
         f"💰 Balans: <b>{(p[3] if p else 0):,} so'm</b>\n"
-        f"🏆 Level: <b>{level} — {name}</b>\n"
         f"🤝 Referallar: <b>{refs[0]} ta</b>\n"
         f"💵 Referral bonusi: <b>{refs[1]:,} so'm</b>",
         parse_mode="HTML"
@@ -1843,6 +2049,9 @@ async def back_admin_menu(message: types.Message, state: FSMContext):
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     
+    await db.init_db()
+    logging.info("Database initialized successfully")
+
     # Webhook serverni sozlash (Aiohttp)
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, payhamyon_webhook_handler)
