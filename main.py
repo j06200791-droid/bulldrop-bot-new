@@ -18,10 +18,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, 
     InlineKeyboardMarkup, InlineKeyboardButton
 )
-try:
-    from aiogram.types.copy_text_button import CopyTextButton
-except ImportError as exc:
-    raise ImportError("CopyTextButton aiogram.types.copy_text_button dan import qilinmadi. aiogram==3.14.0 o'rnating.") from exc
+from aiogram.types.copy_text_button import CopyTextButton
 from aiohttp import web
 
 import database as db
