@@ -477,7 +477,7 @@ async def init_subscription_db():
         await db.commit()
 
 _original_init_db_with_sub = init_db
-async def init_db():
+async def _legacy_init_db():
     await _original_init_db_with_sub()
     await init_subscription_db()
     await init_pro_max_db()
@@ -775,3 +775,74 @@ async def purchase_code_atomic(user_id, category, price):
         await conn.execute("INSERT INTO bot_events(user_id,event_type,amount,category,details) VALUES(?,?,?,?,?)",(user_id,'purchase',int(price),category,'atomic_purchase'))
         await conn.commit()
         return code,uploader
+
+
+# --- PUBG UC DATABASE QO'SHIMCHASI ---
+async def init_db():
+    await _legacy_init_db()
+    async with aiosqlite.connect(DB_NAME) as conn:
+        await conn.execute("""CREATE TABLE IF NOT EXISTS uc_prices (
+            package TEXT PRIMARY KEY,
+            price INTEGER NOT NULL
+        )""")
+        await conn.execute("""CREATE TABLE IF NOT EXISTS uc_redeem_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            package TEXT,
+            code TEXT UNIQUE NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+        async with conn.execute("PRAGMA table_info(uc_redeem_codes)") as cur:
+            cols = {row[1] for row in await cur.fetchall()}
+        if "package" not in cols:
+            await conn.execute("ALTER TABLE uc_redeem_codes ADD COLUMN package TEXT")
+            if "category" in cols:
+                await conn.execute("UPDATE uc_redeem_codes SET package=category WHERE package IS NULL")
+        defaults = {"60": 9500, "325": 47000, "660": 95000, "1800": 250000, "3850": 500000}
+        for package, price in defaults.items():
+            await conn.execute("INSERT OR IGNORE INTO uc_prices(package,price) VALUES(?,?)", (package, price))
+        await conn.commit()
+
+async def get_uc_prices() -> dict:
+    async with aiosqlite.connect(DB_NAME) as conn:
+        async with conn.execute("SELECT package,price FROM uc_prices ORDER BY CAST(package AS INTEGER)") as cur:
+            return {str(r[0]): int(r[1]) for r in await cur.fetchall()}
+
+async def get_uc_count(package: str) -> int:
+    async with aiosqlite.connect(DB_NAME) as conn:
+        async with conn.execute("SELECT COUNT(*) FROM uc_redeem_codes WHERE package=?", (str(package),)) as cur:
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+async def purchase_uc_atomic(user_id: int, package: str, price: int):
+    async with aiosqlite.connect(DB_NAME) as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        async with conn.execute("SELECT balance FROM users WHERE user_id=?", (user_id,)) as cur:
+            row = await cur.fetchone()
+        if not row or int(row[0]) < int(price):
+            await conn.rollback()
+            return None
+        async with conn.execute("SELECT id,code FROM uc_redeem_codes WHERE package=? ORDER BY id LIMIT 1", (str(package),)) as cur:
+            code_row = await cur.fetchone()
+        if not code_row:
+            await conn.rollback()
+            return None
+        code_id, code = code_row
+        await conn.execute("UPDATE users SET balance=balance-? WHERE user_id=?", (int(price), user_id))
+        await conn.execute("DELETE FROM uc_redeem_codes WHERE id=?", (code_id,))
+        await conn.execute("INSERT INTO bot_events(user_id,event_type,amount,category,details) VALUES(?,?,?,?,?)", (user_id, 'purchase', int(price), f'PUBG UC {package}', 'uc_redeem_purchase'))
+        await conn.commit()
+        return code
+
+async def update_uc_price(package: str, price: int):
+    async with aiosqlite.connect(DB_NAME) as conn:
+        await conn.execute("INSERT INTO uc_prices(package,price) VALUES(?,?) ON CONFLICT(package) DO UPDATE SET price=excluded.price", (str(package), int(price)))
+        await conn.commit()
+
+async def add_uc_redeem_code(package: str, code: str) -> bool:
+    try:
+        async with aiosqlite.connect(DB_NAME) as conn:
+            await conn.execute("INSERT INTO uc_redeem_codes(package,code) VALUES(?,?)", (str(package), str(code).strip()))
+            await conn.commit()
+            return True
+    except aiosqlite.IntegrityError:
+        return False
