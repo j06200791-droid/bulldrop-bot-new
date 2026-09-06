@@ -211,6 +211,15 @@ async def save_payment_token(token: str, user_id: int, amount: int):
         )
         await db.commit()
 
+async def get_pending_payments(limit=100):
+    """Watcher uchun hali tolanmagan tolovlarni qaytaradi."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT token, user_id, amount FROM payments WHERE status = 'pending' ORDER BY rowid ASC LIMIT ?",
+            (int(limit),)
+        ) as cursor:
+            return await cursor.fetchall()
+
 async def get_user_id_by_token(token: str):
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT user_id FROM payments WHERE token = ?", (token,)) as cursor:
