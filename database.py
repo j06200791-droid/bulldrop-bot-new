@@ -797,7 +797,7 @@ async def init_db():
             await conn.execute("ALTER TABLE uc_redeem_codes ADD COLUMN package TEXT")
             if "category" in cols:
                 await conn.execute("UPDATE uc_redeem_codes SET package=category WHERE package IS NULL")
-        defaults = {"60": 9500, "325": 47000, "660": 95000, "1800": 250000, "3850": 500000}
+        defaults = {"60": 9500, "120": 19000, "240": 38000, "325": 47000, "660": 95000, "1800": 250000, "3850": 500000}
         for package, price in defaults.items():
             await conn.execute("INSERT OR IGNORE INTO uc_prices(package,price) VALUES(?,?)", (package, price))
         await conn.commit()
