@@ -20,8 +20,8 @@ from aiogram.types import (
 )
 try:
     from aiogram.types.copy_text_button import CopyTextButton
-except ImportError:
-    CopyTextButton = None
+except ImportError as exc:
+    raise ImportError("CopyTextButton aiogram.types.copy_text_button dan import qilinmadi. aiogram==3.14.0 o'rnating.") from exc
 from aiohttp import web
 
 import database as db
@@ -456,13 +456,18 @@ async def show_pubg_uc_menu(message: types.Message):
 
 @dp.callback_query(F.data == "agree_uc_rules")
 async def show_pubg_uc_packages(call: types.CallbackQuery):
-    kb = await pubg_uc_menu_keyboard()
-    await call.message.edit_text(
-        "💵**UC XARID**\n\nXarid qilmoqchi bo'lgan UC paketingizni tanlang:",
-        reply_markup=kb,
-        parse_mode="Markdown"
-    )
+    # Tugma bosilganda Telegramdagi loading darhol yopiladi.
     await call.answer()
+    try:
+        kb = await pubg_uc_menu_keyboard()
+        await call.message.edit_text(
+            "💵**UC XARID**\n\nXarid qilmoqchi bo'lgan UC paketingizni tanlang:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+    except Exception:
+        logging.exception("PUBG UC ROZIMAN callback xatosi")
+        await call.message.answer("❌ UC menyusini ochishda xatolik yuz berdi. Iltimos, qayta urinib ko'ring.")
 
 
 @dp.callback_query(F.data.startswith("buy_uc_"))
