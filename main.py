@@ -16,8 +16,12 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, 
-    InlineKeyboardMarkup, InlineKeyboardButton, CopyTextButton
+    InlineKeyboardMarkup, InlineKeyboardButton
 )
+try:
+    from aiogram.types.copy_text_button import CopyTextButton
+except ImportError:
+    CopyTextButton = None
 from aiohttp import web
 
 import database as db
@@ -36,8 +40,6 @@ BASE_URL = os.getenv("PAYHAMYON_BASE_URL", "https://user91.hostx.uz")
 WEBHOOK_PATH = "/payhamyon/webhook"
 WEB_SERVER_HOST = "0.0.0.0"
 WEB_SERVER_PORT = int(os.getenv("PORT", 8080))
-# PayHamyon webhook uchun tashqi HTTPS manzil. Ixtiyoriy: watcher ham ishlaydi.
-PAYHAMYON_CALLBACK_URL = os.getenv("PAYHAMYON_CALLBACK_URL", "").strip()
 
 # Network uzilishlariga chidamli session
 session = AiohttpSession()
@@ -94,50 +96,44 @@ async def async_check_payment(token: str):
     return await asyncio.to_thread(send_payhamyon_request, f"{BASE_URL}/api/payment/check", payload)
 
 
-async def async_cancel_payment(token: str):
-    payload = {
-        "shop_id": int(SHOP_ID),
-        "shop_key": str(SHOP_KEY).strip(),
-        "token": str(token).strip(),
-    }
-    return await asyncio.to_thread(send_payhamyon_request, f"{BASE_URL}/api/payment/cancel", payload)
-
-
 # --- PAYHAMYON WEBHOOK HANDLER ---
 async def payhamyon_webhook_handler(request: web.Request):
     try:
         data = await request.json()
-        logging.info("PayHamyon webhook: %s", data)
-
-        event = str(data.get("event") or "").lower()
-        status = str(data.get("status") or "").lower()
-        token = str(data.get("token") or "").strip()
-
-        if token and (event == "payment.paid" or status in {"paid", "completed", "success"}):
+        
+        event = data.get("event")
+        status = data.get("status")
+        token = data.get("token")
+        
+        if (event == "payment.paid" or status in ["paid", "success"]) and token:
             check_res = await async_check_payment(token)
-            logging.info("PayHamyon webhook check token=%s response=%s", token, check_res)
-            check_status = str(check_res.get("status") or "").lower()
-
-            if check_res.get("success") and check_status in {"paid", "completed", "success"}:
-                # APIdagi pay_amount emas, bazada saqlangan original summa balansga tushadi.
-                credited_user = await db.credit_payment_once(token, None)
-                if credited_user:
-                    new_bal = await db.get_user_balance(credited_user)
+            
+            if check_res.get("success") and check_res.get("status") in ["paid", "completed", "success"]:
+                amount = check_res.get("amount") or check_res.get("pay_amount") or data.get("amount")
+                user_id = await db.get_user_id_by_token(token) if hasattr(db, "get_user_id_by_token") else None
+                
+                if user_id and amount:
+                    credited_user = await db.credit_payment_once(token, int(amount)) if hasattr(db, "credit_payment_once") else None
+                    if not credited_user:
+                        return web.json_response({"status": "ok"}, status=200)
+                    user_id = credited_user
+                        
+                    new_bal = await db.get_user_balance(user_id)
                     try:
                         await bot.send_message(
-                            credited_user,
-                            "⚡ **Avto to'lov qabul qilindi!**\n\n"
-                            f"💳 Hisobingizga to'lov summasi qo'shildi.\n"
+                            user_id,
+                            f"⚡ **Avto to'lov qabul qilindi!**\n\n"
+                            f"💳 Hisobingizga **{int(amount):,} so'm** qo'shildi.\n"
                             f"💰 Hozirgi balansingiz: **{new_bal:,} so'm**",
                             parse_mode="Markdown"
                         )
-                    except Exception as exc:
-                        logging.warning("To'lov xabarini yuborib bo'lmadi: %s", exc)
-
+                    except Exception:
+                        pass
+        
         return web.json_response({"status": "ok"}, status=200)
     except Exception as e:
-        logging.exception("PayHamyon webhook xatoligi")
-        return web.json_response({"status": "error", "error": str(e)}, status=400)
+        logging.error(f"Webhook xatoligi: {e}")
+        return web.json_response({"status": "error"}, status=400)
 
 
 # --- FSM STATES ---
@@ -163,6 +159,10 @@ class AdminBroadcastState(StatesGroup):
 class AdminEditPriceState(StatesGroup):
     waiting_for_category = State()
     waiting_for_new_price = State()
+
+
+class PUBGUCState(StatesGroup):
+    viewing = State()
 
 
 class AdminUCState(StatesGroup):
@@ -422,6 +422,8 @@ async def cmd_admin(message: types.Message, state: FSMContext):
     await message.answer("Admin panelga xush kelibsiz! Kerakli bo'limni tanlang:", reply_markup=admin_menu_keyboard())
 
 
+
+
 # --- USER: PUBG UC OLISH (faqat UC menyusi; mavjud asosiy menyular o'zgartirilmagan) ---
 async def pubg_uc_menu_keyboard():
     prices = await db.get_uc_prices()
@@ -614,7 +616,6 @@ async def admin_uc_save_codes(message: types.Message, state: FSMContext):
             duplicate += 1
     await state.clear()
     await message.answer(f"✅ {added} ta code qo'shildi.\n⚠️ {duplicate} ta code takrorlangan yoki noto'g'ri.", reply_markup=admin_menu_keyboard())
-
 
 
 # --- USER: PROMOKOD SOTIB OLISH ---
@@ -1194,153 +1195,107 @@ async def start_auto_topup(call: types.CallbackQuery, state: FSMContext):
 
 @dp.message(TopUpState.waiting_for_auto_amount)
 async def process_auto_amount(message: types.Message, state: FSMContext):
-    if not message.text or not message.text.strip().isdigit():
-        await message.answer(
-            "❌ Iltimos, faqat raqam kiriting (masalan: 10000):",
-            reply_markup=back_keyboard()
-        )
+    if not message.text.isdigit():
+        await message.answer("❌ Iltimos, faqat raqamlardan iborat summa kiriting (masalan: 10000):", reply_markup=back_keyboard())
         return
 
-    amount = int(message.text.strip())
+    amount = int(message.text)
     if amount < 1000 or amount > 100000:
-        await message.answer(
-            "❌ Minimal 1 000 so'm, maksimal 100 000 so'm kiriting!",
-            reply_markup=back_keyboard()
-        )
+        await message.answer("❌ Minimal 1 000 so'm, maksimal 100 000 so'm kiriting!", reply_markup=back_keyboard())
         return
 
     await state.clear()
-    msg = await message.answer("⏳ avto to'lov cheki yaratilmoqda...")
+    msg = await message.answer("⏳ To'lov hisob-fakturasi (Chek) yaratilmoqda...")
+    payment = await async_create_payment(amount)
 
-    # To'lovni boshqa to'lovlardan ajratish uchun 1-30 so'm oralig'ida
-    # random komissiya qo'shiladi. Foydalanuvchi kiritgan ORIGINAL summa
-    # bazada saqlanadi va keyinchalik aynan shu summa balansga tushadi.
-    commission = random.randint(1, 30)
-    payment_amount = amount + commission
+    if payment.get("success"):
+        token = payment.get("token")
+        random_addition = random.randint(10, 30)
+        pay_amount = amount + random_addition
 
-    payment = await async_create_payment(
-        payment_amount,
-        callback_url=PAYHAMYON_CALLBACK_URL or None
-    )
+        if hasattr(db, "save_payment_token"):
+            await db.save_payment_token(token, message.from_user.id, amount)
 
-    if not payment.get("success"):
-        err = payment.get("error") or payment.get("message") or "Noma'lum xatolik"
-        logging.error("PayHamyon create xatosi: %s", payment)
-        await msg.edit_text(f"⚠️ To'lov yaratishda xatolik: {err}")
-        return
+        card = payment.get("card", "9860 1606 0204 4267")
 
-    token = str(payment.get("token") or "").strip()
-    if not token:
-        logging.error("PayHamyon create token qaytarmadi: %s", payment)
-        await msg.edit_text("⚠️ PayHamyon token qaytarmadi. Keyinroq qayta urinib ko'ring.")
-        return
+        action_kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="💳 Kartani nusxalash",
+                        copy_text=CopyTextButton(text=str(card))
+                    ),
+                    InlineKeyboardButton(
+                        text="💰 Summani nusxalash",
+                        copy_text=CopyTextButton(text=str(pay_amount))
+                    )
+                ],
+                [InlineKeyboardButton(text="🔍 To'lovni tekshirish", callback_data=f"checkpay_{token}")],
+                [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"cancelpay_{token}")]
+            ]
+        )
 
-    # Bazada foydalanuvchiga tegishli ORIGINAL summa saqlanadi.
-    await db.save_payment_token(token, message.from_user.id, amount)
-
-    # PayHamyon qaytargan haqiqiy to'lov summasi va karta ishlatiladi.
-    pay_amount = payment.get("pay_amount")
-    card = payment.get("card")
-    if pay_amount is None:
-        logging.error("PayHamyon pay_amount qaytarmadi: %s", payment)
-        await msg.edit_text("⚠️ PayHamyon to'lov summasini qaytarmadi. Keyinroq qayta urinib ko'ring.")
-        return
-    if not card:
-        logging.error("PayHamyon card qaytarmadi: %s", payment)
-        await msg.edit_text("⚠️ PayHamyon karta raqamini qaytarmadi. Keyinroq qayta urinib ko'ring.")
-        return
-
-    action_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="💳 Kartani nusxalash",
-                    copy_text=CopyTextButton(text=str(card))
-                ),
-                InlineKeyboardButton(
-                    text="💰 Summani nusxalash",
-                    copy_text=CopyTextButton(text=str(pay_amount))
-                )
-            ],
-            [InlineKeyboardButton(
-                text="🔍 To'lovni tekshirish",
-                callback_data=f"checkpay_{token}"
-            )],
-            [InlineKeyboardButton(
-                text="❌ Bekor qilish",
-                callback_data=f"cancelpay_{token}"
-            )]
-        ]
-    )
-
-    text = (
-        f"📋 **To'lov ma'lumotlari:**\n\n"
-        f"💵 **To'lanishi kerak:** {int(pay_amount):,} so'm\n"
-        f"💳 **Karta raqami:** `{card}`\n"
-        f"👤 **Ega:** A.U\n\n"
-        f"⚠️ **Muhim:** To'lovni aynan {int(pay_amount):,} so'm qilib o'tkazing.\n"
-        f"⏳ **To'lov muddati:** 5 daqiqa\n"
-        f"🧾 **Token:** `{token}`\n\n"
-        f"Tizim to'lovni avtomatik tekshiradi."
-    )
-    await msg.edit_text(text, reply_markup=action_kb, parse_mode="Markdown")
-
+        text = (
+            f"📋 **To'lov ma'lumotlari:**\n\n"
+            f"💵 **To'lanishi kerak:** {pay_amount:,} so'm\n"
+            f"💳 **Karta raqami:** `{card}`\n"
+            f"👤 **Ega:** A.U\n\n"
+            f"⚠️ **Muhim:** To'lovni aynan {pay_amount:,} so'm qilib o'tkazing.\n"
+            f"⏳ **To'lov muddati:** 5 daqiqa\n"
+            f"Tizim sizni summa orqali taniydi."
+        )
+        await msg.edit_text(text, reply_markup=action_kb, parse_mode="Markdown")
+    else:
+        err = payment.get("error", "Noma'lum xatolik")
+        await msg.edit_text(f"⚠️ To'lov yaratishda xatolik yuz berdi: {err}")
 
 @dp.callback_query(F.data.startswith("checkpay_"))
 async def check_auto_pay(call: types.CallbackQuery):
-    token = call.data[len("checkpay_"):].strip()
-    if not token:
-        await call.answer("❌ To'lov tokeni topilmadi.", show_alert=True)
-        return
-
-    if await db.is_payment_paid(token):
-        await call.answer("✅ Bu to'lov allaqachon hisobga qo'shilgan!", show_alert=True)
+    token = call.data.split("_")[1]
+    
+    if hasattr(db, "is_payment_paid") and await db.is_payment_paid(token):
+        await call.answer("✅ Bu to'lov allaqachon hisobingizga qo'shilgan!", show_alert=True)
+        await call.message.edit_text("✅ Ushbu to'lov muvaffaqiyatli yakunlangan!")
         return
 
     res = await async_check_payment(token)
-    logging.info("PayHamyon check token=%s response=%s", token, res)
-
-    if res.get("success") and str(res.get("status", "")).lower() in {"paid", "completed", "success"}:
-        # Kredit summasi bazada saqlangan original summa bo'ladi.
-        credited_user = await db.credit_payment_once(token, None)
-        if not credited_user:
-            await call.answer("✅ Bu to'lov allaqachon hisobga olingan!", show_alert=True)
-            return
-
-        new_bal = await db.get_user_balance(credited_user)
-        await call.message.edit_text(
-            f"🎉 **To'lov muvaffaqiyatli tasdiqlandi!**\n\n"
-            f"💳 Hisobingizga to'lov summasi qo'shildi.\n"
-            f"💰 Hozirgi balansingiz: **{new_bal:,} so'm**",
-            parse_mode="Markdown"
-        )
-        await call.answer("✅ To'lov tasdiqlandi!", show_alert=True)
-        return
-
-    status = str(res.get("status", "pending")).lower()
-    if status in {"pending", "waiting", "unpaid", "created"}:
-        await call.answer(
-            "⏳ To'lov hali aniqlanmadi. Pulni o'tkazgan bo'lsangiz 10-15 soniya kutib qayta tekshiring.",
-            show_alert=True
-        )
-    elif status in {"expired", "canceled", "cancelled", "failed", "rejected"}:
-        await db.set_payment_status(token, "failed")
-        await call.message.edit_text("❌ To'lov muddati o'tgan yoki bekor qilingan.")
-        await call.answer("❌ To'lov bekor qilingan.", show_alert=True)
+    
+    if res.get("success") and res.get("status") in ["paid", "completed", "success"]:
+        amount = res.get("amount") or res.get("pay_amount")
+        user_id = call.from_user.id
+        
+        if amount:
+            credited_user = await db.credit_payment_once(token, int(amount)) if hasattr(db, "credit_payment_once") else None
+            if not credited_user:
+                await call.answer("✅ Bu to'lov allaqachon hisobga olingan!", show_alert=True)
+                return
+                
+            new_bal = await db.get_user_balance(user_id)
+            
+            await call.message.edit_text(
+                f"🎉 **To'lov muvaffaqiyatli tasdiqlandi!**\n\n"
+                f"💳 Hisobingizga **{int(amount):,} so'm** qo'shildi.\n"
+                f"💰 Hozirgi balansingiz: **{new_bal:,} so'm**",
+                parse_mode="Markdown"
+            )
+            await call.answer("To'lov tasdiqlandi va balansga qo'shildi!", show_alert=True)
+        else:
+            await call.answer("❌ Summa aniqlanmadi, admin bilan bog'laning.", show_alert=True)
     else:
-        err = res.get("error") or res.get("message") or status
-        await call.answer(f"⚠️ To'lov holati: {err}", show_alert=True)
+        status = res.get("status", "pending")
+        if status in ["pending", "waiting"]:
+            await call.answer("⏳ Pul hali kartaga yetib kelmadi. To'lovni amalga oshirgan bo'lsangiz 10-15 soniya kutib qayta bosing!", show_alert=True)
+        elif status in ["expired", "canceled", "failed"]:
+            if hasattr(db,"set_payment_status"):
+                await db.set_payment_status(token, "failed")
+            await call.message.edit_text("❌ To'lov muddati o'tgan yoki bekor qilingan.")
+            await call.answer("To'lov muddati tugagan!", show_alert=True)
+        else:
+            await call.answer("❌ To'lov hali amalga oshirilmadi!", show_alert=True)
 
 
 @dp.callback_query(F.data.startswith("cancelpay_"))
 async def cancel_auto_pay(call: types.CallbackQuery):
-    token = call.data[len("cancelpay_"):].strip()
-    if token:
-        result = await async_cancel_payment(token)
-        logging.info("PayHamyon cancel token=%s response=%s", token, result)
-        if result.get("success") is False and result.get("error"):
-            logging.warning("PayHamyon cancel xatosi: %s", result)
-    await db.set_payment_status(token, "canceled")
     await call.message.edit_text("❌ To'lov bekor qilindi.")
     await call.answer("Bekor qilindi")
 
@@ -2095,43 +2050,12 @@ async def back_admin_menu(message: types.Message, state: FSMContext):
         await message.answer("⚙️ Admin panel", reply_markup=admin_menu_keyboard())
 
 
-async def payhamyon_payment_watcher():
-    """Webhook yetib kelmasa ham pending to'lovlarni avtomatik tekshiradi."""
-    while True:
-        try:
-            pending = await db.get_pending_payments()
-            for token, user_id, amount in pending:
-                try:
-                    res = await async_check_payment(token)
-                    status = str(res.get("status") or "").lower()
-                    if res.get("success") and status in {"paid", "completed", "success"}:
-                        credited_user = await db.credit_payment_once(token, None)
-                        if credited_user:
-                            new_bal = await db.get_user_balance(credited_user)
-                            try:
-                                await bot.send_message(
-                                    credited_user,
-                                    "⚡ **Avto to'lov qabul qilindi!**\n\n"
-                                    f"💳 Hisobingizga to'lov summasi qo'shildi.\n"
-                                    f"💰 Hozirgi balansingiz: **{new_bal:,} so'm**",
-                                    parse_mode="Markdown"
-                                )
-                            except Exception as exc:
-                                logging.warning("Watcher xabari yuborilmadi: %s", exc)
-                    elif status in {"expired", "canceled", "cancelled", "failed", "rejected"}:
-                        await db.set_payment_status(token, "failed")
-                except Exception:
-                    logging.exception("PayHamyon watcher token=%s xatosi", token)
-        except Exception:
-            logging.exception("PayHamyon watcher umumiy xatosi")
-        await asyncio.sleep(10)
-
-
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    await db.init_db()
-    asyncio.create_task(payhamyon_payment_watcher())
     
+    await db.init_db()
+    logging.info("Database initialized successfully")
+
     # Webhook serverni sozlash (Aiohttp)
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, payhamyon_webhook_handler)
