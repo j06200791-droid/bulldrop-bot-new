@@ -456,7 +456,7 @@ def admin_menu_keyboard():
             [premium_menu_button("admin_balance_plus", "💰 Balans +"), premium_menu_button("admin_balance_minus", "💸 Balans -")],
             [premium_menu_button("admin_ban", "🚫 Ban"), premium_menu_button("admin_unban", "✅ Unban")],
             [premium_menu_button("admin_user_info", "👤 User ma'lumot"), premium_menu_button("admin_main", "⬅️ Bosh menyu")],
-            [KeyboardButton(text="💎 PREMIUM EMOJI")],
+            # [KeyboardButton(text="💎 PREMIUM EMOJI")],
         ], resize_keyboard=True)
 
 def back_keyboard():
