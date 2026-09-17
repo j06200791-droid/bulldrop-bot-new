@@ -16,8 +16,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, 
-    InlineKeyboardMarkup, InlineKeyboardButton, CopyTextButton
+    InlineKeyboardMarkup, InlineKeyboardButton
 )
+from aiogram.types.copy_text_button import CopyTextButton
 from aiohttp import web
 
 import database as db
@@ -37,9 +38,6 @@ WEBHOOK_PATH = "/payhamyon/webhook"
 WEB_SERVER_HOST = "0.0.0.0"
 WEB_SERVER_PORT = int(os.getenv("PORT", 8080))
 
-# ISBOT KANALI: @username yoki -100... ID. Admin /setproof orqali ham o'rnatishi mumkin.
-PROOF_CHANNEL_ID = os.getenv("PROOF_CHANNEL_ID", "").strip()
-
 # Network uzilishlariga chidamli session
 session = AiohttpSession()
 bot = Bot(token=BOT_TOKEN, session=session)
@@ -49,78 +47,6 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN .env orqali berilishi kerak")
 if not SHOP_KEY:
     logging.warning("SHOP_KEY .env orqali berilmagan; PayHamyon avto tolovlari ishlamaydi.")
-
-
-# --- ISBOT KANALI ---
-async def get_proof_channel_id():
-    """DB dagi kanal sozlamasini oladi; bo'sh bo'lsa Railway env dan foydalanadi."""
-    try:
-        value = await db.get_setting("proof_channel_id", PROOF_CHANNEL_ID)
-    except Exception:
-        value = PROOF_CHANNEL_ID
-    return str(value or "").strip()
-
-
-async def send_proof_channel(text: str):
-    """Sotuv haqida isbot kanaliga xabar yuboradi. Kanal sozlanmagan bo'lsa jim o'tadi."""
-    channel_id = await get_proof_channel_id()
-    if not channel_id:
-        return False
-    try:
-        await bot.send_message(channel_id, text, parse_mode="HTML", disable_web_page_preview=True)
-        return True
-    except Exception as e:
-        logging.error("Isbot kanaliga xabar yuborilmadi: %s", e)
-        return False
-
-
-@dp.message(Command("setproof"))
-async def set_proof_channel(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer(
-            "📢 <b>Isbot kanalini sozlash</b>\n\n"
-            "Misol: <code>/setproof @kanalusername</code>\n"
-            "yoki: <code>/setproof -1001234567890</code>\n\n"
-            "⚠️ Bot kanalga admin bo'lishi va kanalga post yubora olishi kerak."
-        )
-        return
-    channel_id = parts[1].strip()
-    if not (channel_id.startswith("@") or channel_id.lstrip("-").isdigit()):
-        await message.answer("❌ Kanal username @... yoki Telegram chat ID bo'lishi kerak.")
-        return
-    try:
-        chat = await bot.get_chat(channel_id)
-        if getattr(chat, "type", None) != "channel":
-            await message.answer("❌ Bu chat kanal emas. Kanal username yoki -100... ID yuboring.")
-            return
-        me = await bot.get_me()
-        member = await bot.get_chat_member(chat.id, me.id)
-        status = getattr(member, "status", "")
-        if status not in {"administrator", "creator"}:
-            await message.answer("❌ Bot kanalga admin qilib qo'yilmagan. Avval botni kanalga admin qiling.")
-            return
-        await db.set_setting("proof_channel_id", str(chat.id))
-        await message.answer(
-            f"✅ Isbot kanali saqlandi: <b>{chat.title or chat.id}</b>\n\n"
-            "Endi PM va PUBG UC sotilganda kanalga avtomatik xabar boradi."
-        )
-    except Exception as e:
-        logging.error("Isbot kanalini sozlash xatosi: %s", e)
-        await message.answer("❌ Kanalni topib bo'lmadi. Bot kanalga qo'shilganini va admin ekanini tekshiring.")
-
-
-@dp.message(Command("proof"))
-async def proof_channel_status(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    channel_id = await get_proof_channel_id()
-    if channel_id:
-        await message.answer(f"📢 Isbot kanali: <code>{channel_id}</code>")
-    else:
-        await message.answer("📢 Isbot kanali hali sozlanmagan.\n\n<code>/setproof @kanalusername</code>")
 
 
 # --- PAYHAMYON API FUNKSIYALARI ---
@@ -166,6 +92,21 @@ async def async_check_payment(token: str):
     }
     return await asyncio.to_thread(send_payhamyon_request, f"{BASE_URL}/api/payment/check", payload)
 
+async def async_get_shop_info():
+    payload = {
+        "shop_id": int(SHOP_ID),
+        "shop_key": str(SHOP_KEY).strip(),
+    }
+    return await asyncio.to_thread(send_payhamyon_request, f"{BASE_URL}/api/shop/info", payload)
+
+async def async_cancel_payment(token: str):
+    payload = {
+        "shop_id": int(SHOP_ID),
+        "shop_key": str(SHOP_KEY).strip(),
+        "token": str(token).strip(),
+    }
+    return await asyncio.to_thread(send_payhamyon_request, f"{BASE_URL}/api/payment/cancel", payload)
+
 
 # --- PAYHAMYON WEBHOOK HANDLER ---
 async def payhamyon_webhook_handler(request: web.Request):
@@ -206,152 +147,6 @@ async def payhamyon_webhook_handler(request: web.Request):
         logging.error(f"Webhook xatoligi: {e}")
         return web.json_response({"status": "error"}, status=400)
 
-
-
-# ============================================================
-# PREMIUM EMOJI - HAR BIR MENYU UCHUN ALOHIDA
-# ============================================================
-PREMIUM_MENU_EMOJIS = {}
-PREMIUM_MENU_MARKER = "\u2063"
-
-MAIN_MENU_ITEMS = [
-    ("main_promocode", "🎁 Promokod sotib olish"),
-    ("main_pubg", "🎮 PUBG UC XARID"),
-    ("main_profile", "👤 Profil"),
-    ("main_balance", "💳 Balans to'ldirish"),
-    ("main_bonus_code", "🎟️ Bonus kod"),
-    ("main_purchases", "🛒 Xaridlarim"),
-    ("main_payments", "💳 To'lovlarim"),
-    ("main_referral", "🤝 Referral"),
-    ("main_daily", "🎁 Kunlik bonus"),
-    ("main_rating", "🏆 Reyting"),
-    ("main_admin", "⚙️ Admin Menyu"),
-]
-
-ADMIN_MENU_ITEMS = [
-    ("admin_users", "👤 USERLAR"), ("admin_balance", "💰 BALANS"),
-    ("admin_sales", "🛒 SAVDO"), ("admin_payments", "💳 TO'LOVLAR"),
-    ("admin_stock", "📦 QOLDIQ"), ("admin_promo", "🎁 PROMO"),
-    ("admin_support", "🎫 SUPPORT"), ("admin_ad", "📢 REKLAMA"),
-    ("admin_stats", "📊 STATISTIKA"), ("admin_log", "📝 LOG"),
-    ("admin_settings", "⚙️ SOZLAMALAR"), ("admin_security", "🛡️ XAVFSIZlik"),
-    ("admin_required", "📢 Majburiy obuna"), ("admin_add_pm", "➕ PM qo'shish"),
-    ("admin_pm_price", "✏️ PM narxini o'zgartirish"), ("admin_sell_price", "🏷️ Foydalanuvchi sotish narxi"),
-    ("admin_revenue", "📈 Daromad"), ("admin_search", "🔎 User qidirish"),
-    ("admin_pubg", "🎮 PUBG UC boshqaruvi"), ("admin_balance_plus", "💰 Balans +"),
-    ("admin_balance_minus", "💸 Balans -"), ("admin_ban", "🚫 Ban"),
-    ("admin_unban", "✅ Unban"), ("admin_user_info", "👤 User ma'lumot"),
-    ("admin_main", "⬅️ Bosh menyu"),
-]
-
-PREMIUM_MENU_LEGACY = dict(MAIN_MENU_ITEMS + ADMIN_MENU_ITEMS)
-PREMIUM_MENU_DISPLAY_TO_LEGACY = {}
-
-# Premium tugmalar ko'rsatilganda Telegram faqat tugma textini qaytaradi.
-# Shuning uchun ko'rsatiladigan matn -> eski handler matni xaritasini har safar yangilaymiz.
-
-def _plain_menu_text(text):
-    if " " in text:
-        first, rest = text.split(" ", 1)
-        if first and not first[0].isalnum():
-            return rest
-    return text
-
-def premium_menu_button(key, legacy_text):
-    custom_id = PREMIUM_MENU_EMOJIS.get(key)
-    if custom_id:
-        display = _plain_menu_text(legacy_text)
-        PREMIUM_MENU_DISPLAY_TO_LEGACY[display] = legacy_text
-        return KeyboardButton(text=display, icon_custom_emoji_id=str(custom_id))
-    return KeyboardButton(text=legacy_text)
-
-async def refresh_premium_menu_emojis():
-    PREMIUM_MENU_EMOJIS.clear()
-    for key, _ in MAIN_MENU_ITEMS + ADMIN_MENU_ITEMS:
-        value = await db.get_setting(f"premium_menu_emoji_{key}", "")
-        if value:
-            PREMIUM_MENU_EMOJIS[key] = value
-
-class PremiumEmojiState(StatesGroup):
-    waiting_for_target = State()
-    waiting_for_emoji = State()
-
-def premium_emoji_panel_keyboard():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="🏠 Bosh menyu emojilari")],
-        [KeyboardButton(text="⚙️ Admin menyu emojilari")],
-        [KeyboardButton(text="🔙 Orqaga")],
-    ], resize_keyboard=True)
-
-def premium_targets_keyboard(items):
-    rows = []
-    for i in range(0, len(items), 2):
-        row = [KeyboardButton(text=f"🔹 {items[i][0]}\n{_plain_menu_text(items[i][1])}")]
-        if i + 1 < len(items):
-            row.append(KeyboardButton(text=f"🔹 {items[i+1][0]}\n{_plain_menu_text(items[i+1][1])}"))
-        rows.append(row)
-    rows.append([KeyboardButton(text="🔙 Orqaga")])
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
-
-@dp.message(F.text == "💎 PREMIUM EMOJI")
-async def premium_emoji_panel(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await state.clear()
-    await message.answer(
-        "💎 <b>PREMIUM EMOJI SOZLAMALARI</b>\n\n"
-        "Har bir menyu tugmasiga o'zingiz xohlagan Premium emoji qo'ying.\n"
-        "Raqam qo'shilmaydi va eski emoji matndan olib tashlanadi.",
-        parse_mode="HTML", reply_markup=premium_emoji_panel_keyboard()
-    )
-
-@dp.message(F.text == "🏠 Bosh menyu emojilari")
-async def premium_main_targets(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
-    await state.set_state(PremiumEmojiState.waiting_for_target)
-    await message.answer("🏠 Bosh menyudan qaysi tugmaga Premium emoji qo'yasiz?", reply_markup=premium_targets_keyboard(MAIN_MENU_ITEMS))
-
-@dp.message(F.text == "⚙️ Admin menyu emojilari")
-async def premium_admin_targets(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
-    await state.set_state(PremiumEmojiState.waiting_for_target)
-    await message.answer("⚙️ Admin menyudan qaysi tugmaga Premium emoji qo'yasiz?", reply_markup=premium_targets_keyboard(ADMIN_MENU_ITEMS))
-
-@dp.message(PremiumEmojiState.waiting_for_target)
-async def premium_target_handler(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
-    raw = (message.text or "").replace("🔹 ", "", 1).strip()
-    key = None
-    for k, label in MAIN_MENU_ITEMS + ADMIN_MENU_ITEMS:
-        if raw == f"{k}\n{_plain_menu_text(label)}" or raw.split("\n", 1)[0].strip() == k:
-            key = k
-            break
-    if not key:
-        await message.answer("Tugmalardan birini tanlang.")
-        return
-    await state.update_data(target_key=key)
-    await state.set_state(PremiumEmojiState.waiting_for_emoji)
-    await message.answer("💎 Endi Telegram emoji panelidan <b>bitta Premium emoji</b> yuboring.", parse_mode="HTML", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔙 Orqaga")]], resize_keyboard=True))
-
-@dp.message(PremiumEmojiState.waiting_for_emoji)
-async def premium_emoji_save(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
-    custom_id = None
-    for ent in (message.entities or []):
-        if getattr(ent, "type", None) == "custom_emoji":
-            custom_id = getattr(ent, "custom_emoji_id", None)
-            if custom_id: break
-    if not custom_id:
-        await message.answer("❌ Premium emoji topilmadi. Telegram emoji panelidan Premium emoji yuboring.")
-        return
-    data = await state.get_data()
-    key = data.get("target_key")
-    if not key:
-        await state.clear(); return
-    await db.set_setting(f"premium_menu_emoji_{key}", str(custom_id))
-    PREMIUM_MENU_EMOJIS[key] = str(custom_id)
-    await state.clear()
-    await message.answer("✅ Premium emoji saqlandi. Shu tugmada endi faqat tanlagan Premium emoji ikonka bo'lib chiqadi.", reply_markup=premium_emoji_panel_keyboard())
 
 # --- FSM STATES ---
 class TopUpState(StatesGroup):
@@ -405,30 +200,76 @@ class AdminUserOpState(StatesGroup):
     waiting_for_ban_id = State()
     waiting_for_unban_id = State()
 
+# --- QO'SHIMCHA ADMIN FSM ---
+class AdminExtraState(StatesGroup):
+    waiting_for_user_id = State()
+    waiting_for_promo_delete = State()
+    waiting_for_ticket_reply = State()
+    waiting_for_promo_code = State()
+    waiting_for_promo_amount = State()
+    waiting_for_promo_uses = State()
+    waiting_for_promo_expiry = State()
+    waiting_for_promo_target = State()
+    waiting_for_ticket_id = State()
+    waiting_for_setting = State()
+    waiting_for_setting_value = State()
+    waiting_for_required_channel = State()
+    waiting_for_required_remove = State()
+    waiting_for_broadcast_target = State()
+    waiting_for_broadcast_message = State()
+    waiting_for_maintenance = State()
+    waiting_for_cashback = State()
+    waiting_for_referral_bonus = State()
+    waiting_for_proof_channel = State()
+
+class UserExtraState(StatesGroup):
+    waiting_for_bonus_code = State()
+    waiting_for_support_message = State()
+
+
+
 #  KeyboardButton(text="➕ Promokod sotish")]
 # --- KEYBOARDS ---
 def main_menu(user_id: int):
-    # Har safar keyboard qayta qurilganda joriy premium matnlar xaritasini yangilaymiz.
-    PREMIUM_MENU_DISPLAY_TO_LEGACY.clear()
     buttons = [
-        [premium_menu_button("main_promocode", "🎁 Promokod sotib olish"), premium_menu_button("main_pubg", "🎮 PUBG UC XARID")],
-        [premium_menu_button("main_profile", "👤 Profil"), premium_menu_button("main_balance", "💳 Balans to'ldirish")],
-        [premium_menu_button("main_bonus_code", "🎟️ Bonus kod"), premium_menu_button("main_purchases", "🛒 Xaridlarim")],
-        [premium_menu_button("main_payments", "💳 To'lovlarim"), premium_menu_button("main_referral", "🤝 Referral")],
-        [premium_menu_button("main_daily", "🎁 Kunlik bonus"), premium_menu_button("main_rating", "🏆 Reyting")],
+        [KeyboardButton(text="🎁 Promokod sotib olish"), KeyboardButton(text="🎮 PUBG UC XARID")],
+        [KeyboardButton(text="👤 Profil"), KeyboardButton(text="💳 Balans to'ldirish")],
+        [KeyboardButton(text="🎟️ Bonus kod"), KeyboardButton(text="🛒 Xaridlarim")],
+        [KeyboardButton(text="💳 To'lovlarim"), KeyboardButton(text="🤝 Referral")],
+        [KeyboardButton(text="🎁 Kunlik bonus"), KeyboardButton(text="🏆 Reyting")],
+       
     ]
     if user_id == ADMIN_ID:
-        buttons.append([premium_menu_button("main_admin", "⚙️ Admin Menyu")])
+        buttons.append([KeyboardButton(text="⚙️ Admin Menyu")])
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
+async def send_proof_sale(kind: str, buyer, amount: int, item: str):
+    """Send a sale proof to the configured proof channel. No effect if not configured."""
+    try:
+        channel = await db.get_setting("proof_channel_id", "")
+        if not channel:
+            channel = os.getenv("PROOF_CHANNEL", "").strip()
+        if not channel:
+            return
+        username = f"@{buyer.username}" if buyer.username else f"ID: {buyer.id}"
+        if kind == "UC":
+            text = (f"🎮 PUBG UC SOTILDI!\n\n"
+                    f"👤 Xaridor: {username}\n"
+                    f"🆔 ID: `{buyer.id}`\n\n"
+                    f"💎 Miqdor: {item} UC\n"
+                    f"💰 Narxi: {amount:,} so'm\n\n"
+                    f"✅ Xarid muvaffaqiyatli amalga oshirildi!")
+        else:
+            text = (f"🟢 PM SOTILDI!\n\n"
+                    f"👤 Xaridor: {username}\n"
+                    f"🆔 ID: `{buyer.id}`\n\n"
+                    f"📦 Mahsulot: {item}\n"
+                    f"💰 Narxi: {amount:,} so'm\n\n"
+                    f"✅ Xarid muvaffaqiyatli amalga oshirildi!")
+        await bot.send_message(channel, text, parse_mode="Markdown")
+    except Exception as e:
+        logging.error("Proof kanalga xabar yuborishda xato: %s", e)
 
-@dp.message.outer_middleware()
-async def premium_menu_text_normalizer(handler, event, data):
-    if isinstance(event, types.Message) and event.text and event.from_user:
-        legacy = PREMIUM_MENU_DISPLAY_TO_LEGACY.get(event.text)
-        if legacy:
-            object.__setattr__(event, "text", legacy)
-    return await handler(event, data)
 
 def topup_methods_keyboard():
     return InlineKeyboardMarkup(
@@ -440,23 +281,22 @@ def topup_methods_keyboard():
 
 
 def admin_menu_keyboard():
-    PREMIUM_MENU_DISPLAY_TO_LEGACY.clear()
     return ReplyKeyboardMarkup(
         keyboard=[
-            [premium_menu_button("admin_users", "👤 USERLAR"), premium_menu_button("admin_balance", "💰 BALANS")],
-            [premium_menu_button("admin_sales", "🛒 SAVDO"), premium_menu_button("admin_payments", "💳 TO'LOVLAR")],
-            [premium_menu_button("admin_stock", "📦 QOLDIQ"), premium_menu_button("admin_promo", "🎁 PROMO")],
-            [premium_menu_button("admin_support", "🎫 SUPPORT"), premium_menu_button("admin_ad", "📢 REKLAMA")],
-            [premium_menu_button("admin_stats", "📊 STATISTIKA"), premium_menu_button("admin_log", "📝 LOG")],
-            [premium_menu_button("admin_settings", "⚙️ SOZLAMALAR"), premium_menu_button("admin_security", "🛡️ XAVFSIZlik")],
-            [premium_menu_button("admin_required", "📢 Majburiy obuna"), premium_menu_button("admin_add_pm", "➕ PM qo'shish")],
-            [premium_menu_button("admin_pm_price", "✏️ PM narxini o'zgartirish"), premium_menu_button("admin_sell_price", "🏷️ Foydalanuvchi sotish narxi")],
-            [premium_menu_button("admin_revenue", "📈 Daromad"), premium_menu_button("admin_search", "🔎 User qidirish")],
-            [premium_menu_button("admin_pubg", "🎮 PUBG UC boshqaruvi")],
-            [premium_menu_button("admin_balance_plus", "💰 Balans +"), premium_menu_button("admin_balance_minus", "💸 Balans -")],
-            [premium_menu_button("admin_ban", "🚫 Ban"), premium_menu_button("admin_unban", "✅ Unban")],
-            [premium_menu_button("admin_user_info", "👤 User ma'lumot"), premium_menu_button("admin_main", "⬅️ Bosh menyu")],
-            # [KeyboardButton(text="💎 PREMIUM EMOJI")],
+            [KeyboardButton(text="👤 USERLAR"), KeyboardButton(text="💰 BALANS")],
+            [KeyboardButton(text="🛒 SAVDO"), KeyboardButton(text="💳 TO'LOVLAR")],
+            [KeyboardButton(text="📦 QOLDIQ"), KeyboardButton(text="🎁 PROMO")],
+            [KeyboardButton(text="🎫 SUPPORT"), KeyboardButton(text="📢 REKLAMA")],
+            [KeyboardButton(text="📊 STATISTIKA"), KeyboardButton(text="📝 LOG")],
+            [KeyboardButton(text="⚙️ SOZLAMALAR"), KeyboardButton(text="🛡️ XAVFSIZlik")],
+            [KeyboardButton(text="📢 Majburiy obuna"), KeyboardButton(text="➕ PM qo'shish")],
+            [KeyboardButton(text="✏️ PM narxini o'zgartirish"), KeyboardButton(text="🏷️ Foydalanuvchi sotish narxi")],
+            [KeyboardButton(text="📈 Daromad"), KeyboardButton(text="🔎 User qidirish")],
+            [KeyboardButton(text="🎮 PUBG UC boshqaruvi")],
+            [KeyboardButton(text="📣 PROOF kanal")],
+            [KeyboardButton(text="💰 Balans +"), KeyboardButton(text="💸 Balans -")],
+            [KeyboardButton(text="🚫 Ban"), KeyboardButton(text="✅ Unban")],
+            [KeyboardButton(text="👤 User ma'lumot"), KeyboardButton(text="⬅️ Bosh menyu")]
         ], resize_keyboard=True)
 
 def back_keyboard():
@@ -685,13 +525,18 @@ async def show_pubg_uc_menu(message: types.Message):
 
 @dp.callback_query(F.data == "agree_uc_rules")
 async def show_pubg_uc_packages(call: types.CallbackQuery):
-    kb = await pubg_uc_menu_keyboard()
-    await call.message.edit_text(
-        "💵**UC XARID**\n\nXarid qilmoqchi bo'lgan UC paketingizni tanlang:",
-        reply_markup=kb,
-        parse_mode="Markdown"
-    )
+    # Tugma bosilganda Telegramdagi loading darhol yopiladi.
     await call.answer()
+    try:
+        kb = await pubg_uc_menu_keyboard()
+        await call.message.edit_text(
+            "💵**UC XARID**\n\nXarid qilmoqchi bo'lgan UC paketingizni tanlang:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+    except Exception:
+        logging.exception("PUBG UC ROZIMAN callback xatosi")
+        await call.message.answer("❌ UC menyusini ochishda xatolik yuz berdi. Iltimos, qayta urinib ko'ring.")
 
 
 @dp.callback_query(F.data.startswith("buy_uc_"))
@@ -728,17 +573,53 @@ async def process_pubg_uc_buy(call: types.CallbackQuery):
         f"💳 Qolgan balans: **{new_balance:,} so'm**",
         parse_mode="Markdown"
     )
-
-    buyer = call.from_user.username
-    buyer_str = f"@{buyer}" if buyer else f"ID: {user_id}"
-    await send_proof_channel(
-        "🟢 <b>PUBG UC SOTILDI</b>\n\n"
-        f"💎 Paket: <b>{package} UC</b>\n"
-        f"💰 Summa: <b>{price:,} so'm</b>\n"
-        f"👤 Xaridor: <b>{buyer_str}</b>\n"
-        f"🆔 ID: <code>{user_id}</code>"
-    )
+    await send_proof_sale("UC", call.from_user, price, package)
     await call.answer("✅ UC xarid qilindi!")
+
+
+# --- ADMIN: PROOF KANAL ---
+@dp.message(F.text == "📣 PROOF kanal")
+async def admin_proof_channel_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    current = await db.get_setting("proof_channel_id", "")
+    await state.set_state(AdminExtraState.waiting_for_proof_channel)
+    await message.answer(
+        "📣 **PROOF kanal sozlamasi**\n\n"
+        f"Hozirgi kanal: `{current or 'Ulanmagan'}`\n\n"
+        "Kanal username yoki ID sini yuboring.\n"
+        "Masalan: `@kanal_nomi` yoki `-1001234567890`\n\n"
+        "⚠️ Bot kanalga admin va xabar yuborish huquqiga ega bo'lsin.",
+        parse_mode="Markdown", reply_markup=back_keyboard()
+    )
+
+
+@dp.message(AdminExtraState.waiting_for_proof_channel)
+async def admin_proof_channel_save(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    channel = (message.text or "").strip()
+    if not channel:
+        await message.answer("❌ Kanal username yoki ID yuboring.")
+        return
+    try:
+        chat = await bot.get_chat(channel)
+        me = await bot.get_me()
+        member = await bot.get_chat_member(chat.id, me.id)
+        status = getattr(member, "status", "")
+        if status not in {"administrator", "creator"}:
+            await message.answer("❌ Bot bu kanalda admin emas yoki xabar yuborish huquqiga ega emas.")
+            return
+        await db.set_setting("proof_channel_id", str(chat.id))
+        await state.clear()
+        await message.answer(
+            f"✅ PROOF kanal ulandi!\n\n📣 {chat.title or channel}\n🆔 `{chat.id}`\n\n"
+            "Endi PM yoki PUBG UC sotilganda bot shu kanalga avtomatik xabar yuboradi.",
+            parse_mode="Markdown", reply_markup=admin_menu_keyboard()
+        )
+    except Exception as e:
+        logging.error("Proof kanal sozlashda xato: %s", e)
+        await message.answer("❌ Kanal topilmadi. Username/ID va botning admin huquqini tekshiring")
 
 
 # --- ADMIN: PUBG UC BOSHQARUVI ---
@@ -791,7 +672,7 @@ async def admin_uc_price_start(message: types.Message, state: FSMContext):
 
 @dp.message(AdminUCState.waiting_price_package)
 async def admin_uc_price_package(message: types.Message, state: FSMContext):
-    package = message.text.replace("💎 ", "").replace("💵 ", "").replace(" UC", "").strip()
+    package = message.text.replace("💎 ", "").replace(" UC", "").strip()
     if package not in {"60", "120", "240", "325", "660", "1800", "3850"}:
         await message.answer("Iltimos, UC paket tugmasini tanlang.")
         return
@@ -830,7 +711,7 @@ async def admin_uc_code_start(message: types.Message, state: FSMContext):
 
 @dp.message(AdminUCState.waiting_code_package)
 async def admin_uc_code_package(message: types.Message, state: FSMContext):
-    package = message.text.replace("💎 ", "").replace("💵 ", "").replace(" UC", "").strip()
+    package = message.text.replace("💎 ", "").replace(" UC", "").strip()
     if package not in {"60", "120", "240", "325", "660", "1800", "3850"}:
         await message.answer("Iltimos, UC paket tugmasini tanlang.")
         return
@@ -957,18 +838,6 @@ async def process_buy_pm(call: types.CallbackQuery):
         except Exception as e:
             logging.error(f"Adminga xabar yuborishda xatolik: {e}")
 
-    buyer_username = call.from_user.username
-    buyer_str = f"@{buyer_username}" if buyer_username else f"ID: {user_id}"
-    seller_info = "Admin zaxirasi" if not uploader_id or uploader_id == ADMIN_ID else f"Sotuvchi ID: {uploader_id}"
-    await send_proof_channel(
-        "🟢 <b>PM SOTILDI</b>\n\n"
-        f"📦 Toifa: <b>{category} PM</b>\n"
-        f"💰 Summa: <b>{price:,} so'm</b>\n"
-        f"👤 Xaridor: <b>{buyer_str}</b>\n"
-        f"🆔 Xaridor ID: <code>{user_id}</code>\n"
-        f"📤 {seller_info}"
-    )
-
     try:
         ref_bonus = int(await db.get_setting("referral_bonus", "500"))
         referrer_id = await db.complete_referral_bonus(user_id, ref_bonus) if ref_bonus > 0 else 0
@@ -994,6 +863,7 @@ async def process_buy_pm(call: types.CallbackQuery):
         + (f"\n\n💸 Cashback: **+{cashback:,} so'm**" if cashback > 0 else "")
     )
     await call.message.edit_text(success_text, parse_mode="Markdown")
+    await send_proof_sale("PM", call.from_user, price, f"{category} PM")
     await call.answer("Muvaffaqiyatli xarid qilindi!")
 
 
@@ -1128,32 +998,6 @@ async def process_user_sell_new_price(message: types.Message, state: FSMContext)
         
     await message.answer(f"✅ {cat} PM uchun foydalanuvchi sotish narxi {new_price:,} so'm etib belgilandi!", reply_markup=admin_menu_keyboard())
     await state.clear()
-
-
-# --- QO'SHIMCHA ADMIN FSM ---
-class AdminExtraState(StatesGroup):
-    waiting_for_user_id = State()
-    waiting_for_promo_delete = State()
-    waiting_for_ticket_reply = State()
-    waiting_for_promo_code = State()
-    waiting_for_promo_amount = State()
-    waiting_for_promo_uses = State()
-    waiting_for_promo_expiry = State()
-    waiting_for_promo_target = State()
-    waiting_for_ticket_id = State()
-    waiting_for_setting = State()
-    waiting_for_setting_value = State()
-    waiting_for_required_channel = State()
-    waiting_for_required_remove = State()
-    waiting_for_broadcast_target = State()
-    waiting_for_broadcast_message = State()
-    waiting_for_maintenance = State()
-    waiting_for_cashback = State()
-    waiting_for_referral_bonus = State()
-
-class UserExtraState(StatesGroup):
-    waiting_for_bonus_code = State()
-    waiting_for_support_message = State()
 
 
 # ============================================================
@@ -1438,7 +1282,7 @@ async def start_auto_topup(call: types.CallbackQuery, state: FSMContext):
     text = (
         "💳 **Hisobni avto to'ldirish**\n\n"
         "💰 Qancha summaga to'ldirmoqchisiz?\n"
-        "📊 Limit: **1 000 - 100 000 so'm**\n\n"
+        "📊 Limit: **1 000 - 2 500 000 so'm**\n\n"
         "📝 Summani so'mda kiriting (Masalan: 10000):"
     )
     await call.message.edit_text(text, parse_mode="Markdown")
@@ -1453,8 +1297,8 @@ async def process_auto_amount(message: types.Message, state: FSMContext):
         return
 
     amount = int(message.text)
-    if amount < 1000 or amount > 100000:
-        await message.answer("❌ Minimal 1 000 so'm, maksimal 100 000 so'm kiriting!", reply_markup=back_keyboard())
+    if amount < 1000 or amount > 2500000:
+        await message.answer("❌ Minimal 1 000 so'm, maksimal 2 500 000 so'm kiriting!", reply_markup=back_keyboard())
         return
 
     await state.clear()
@@ -1463,8 +1307,14 @@ async def process_auto_amount(message: types.Message, state: FSMContext):
 
     if payment.get("success"):
         token = payment.get("token")
-        random_addition = random.randint(10, 30)
-        pay_amount = amount + random_addition
+        # PayHamyon namunasidagi pay_amount bo'lsa, aynan shuni ishlatamiz.
+        # API qaytarmasa, 1-30 so'mlik tasodifiy qo'shimcha qo'llanadi.
+        api_pay_amount = payment.get("pay_amount")
+        if api_pay_amount is not None:
+            pay_amount = int(api_pay_amount)
+        else:
+            random_addition = random.randint(1, 30)
+            pay_amount = amount + random_addition
 
         if hasattr(db, "save_payment_token"):
             await db.save_payment_token(token, message.from_user.id, amount)
@@ -1492,7 +1342,8 @@ async def process_auto_amount(message: types.Message, state: FSMContext):
             f"📋 **To'lov ma'lumotlari:**\n\n"
             f"💵 **To'lanishi kerak:** {pay_amount:,} so'm\n"
             f"💳 **Karta raqami:** `{card}`\n"
-            f"👤 **Ega:** A.U\n\n"
+            f"👤 **Ega:** A.U\n"
+            f"🧾 **Token:** `{token}`\n\n"
             f"⚠️ **Muhim:** To'lovni aynan {pay_amount:,} so'm qilib o'tkazing.\n"
             f"⏳ **To'lov muddati:** 5 daqiqa\n"
             f"Tizim sizni summa orqali taniydi."
@@ -1549,8 +1400,16 @@ async def check_auto_pay(call: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("cancelpay_"))
 async def cancel_auto_pay(call: types.CallbackQuery):
-    await call.message.edit_text("❌ To'lov bekor qilindi.")
-    await call.answer("Bekor qilindi")
+    token = call.data.split("_", 1)[1]
+    try:
+        res = await async_cancel_payment(token)
+        if res.get("success") or res.get("status") in ["canceled", "cancelled", "success"]:
+            await call.message.edit_text("❌ To'lov bekor qilindi.")
+            await call.answer("Bekor qilindi")
+        else:
+            await call.answer("❌ To'lovni bekor qilishda xatolik.", show_alert=True)
+    except Exception:
+        await call.answer("❌ To'lovni bekor qilishda xatolik.", show_alert=True)
 
 
 @dp.callback_query(F.data == "pay_admin")
@@ -2307,7 +2166,6 @@ async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     
     await db.init_db()
-    await refresh_premium_menu_emojis()
     logging.info("Database initialized successfully")
 
     # Webhook serverni sozlash (Aiohttp)
@@ -2316,16 +2174,8 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, WEB_SERVER_HOST, WEB_SERVER_PORT)
-    try:
-        await site.start()
-    except OSError as exc:
-        if getattr(exc, "winerror", None) == 10048 or "address already in use" in str(exc).lower() or "10048" in str(exc):
-            logging.warning("Port %s band. Lokal test uchun bo'sh port tanlanmoqda.", WEB_SERVER_PORT)
-            site = web.TCPSite(runner, WEB_SERVER_HOST, 0)
-            await site.start()
-        else:
-            raise
-    logging.info("Web server ishga tushdi: %s%s", WEB_SERVER_HOST, WEBHOOK_PATH)
+    await site.start()
+    logging.info(f"Web server ishga tushdi: http://{WEB_SERVER_HOST}:{WEB_SERVER_PORT}{WEBHOOK_PATH}")
 
     # Botni ishga tushirish
     await dp.start_polling(bot)
