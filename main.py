@@ -2168,6 +2168,15 @@ async def main():
     await db.init_db()
     logging.info("Database initialized successfully")
 
+    # Telegram polling va eski webhook bir vaqtda ishlamasligi uchun
+    # ishga tushishdan oldin eski Telegram webhookni o'chiramiz.
+    # Bu PayHamyon webhookiga ta'sir qilmaydi.
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logging.info("Telegram webhook o'chirildi; polling ishga tayyor")
+    except Exception as e:
+        logging.warning("Telegram webhookni o'chirishda xato: %s", e)
+
     # Webhook serverni sozlash (Aiohttp)
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, payhamyon_webhook_handler)
